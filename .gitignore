@@ -1,0 +1,64 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Packaging / build
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# ---- App secrets / environment ----
+.env
+.env.*
+!.env.example
+
+# ---- Runtime data (do not commit) ----
+# SQLite / local data
+Risk Assessment/data/*.db
+Risk Assessment/data/**/*.db
+Risk Assessment/data/*.sqlite
+Risk Assessment/data/**/*.sqlite
+Risk Assessment/data/*.sqlite3
+Risk Assessment/data/**/*.sqlite3
+
+# Uploads / archived uploads (attachments)
+Risk Assessment/data/uploads/
+Risk Assessment/data/uploads_archive/
+
+# If you ever point UPLOAD_DIR / ATTACHMENT_ARCHIVE_DIR elsewhere
+**/uploads/
+**/uploads_archive/
+
+# Logs
+Risk Assessment/iis log.txt
+RiskTicketing/logs/
+W3SVC3/
+
+*.log
+
+# ---- Windows / IIS / tooling ----
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# VS Code workspace settings
+.vscode/
+*.code-workspace
+
+# ---- Office files / local assets ----
+# Keep the register out of git unless you explicitly want it versioned.
+Risk Assessment/Risk Register.xlsx
+
+# Optional: ignore local images/assets you don't want versioned
+# Risk Assessment/companylogotemplate.png

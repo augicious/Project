@@ -1,0 +1,132 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="card">
+    <div class="detail-header">
+        <div>
+            <h2>{{ risk['title'] }}</h2>
+            <p class="subtitle">Status: {{ risk['status'] }}</p>
+        </div>
+        <div class="progress-summary">
+            <progress class="progress large" value="{{ risk['progress'] or 0 }}" max="100"></progress>
+            <small>{{ risk['progress'] }}% complete</small>
+        </div>
+    </div>
+
+    <div class="detail-grid">
+        <div>
+            <h3>Description</h3>
+            <p>{{ risk['description'] }}</p>
+        </div>
+        <div>
+            <h3>Priority</h3>
+            <p>{{ risk['priority'] or 'Not set' }}</p>
+        </div>
+        <div>
+            <h3>Date Identified</h3>
+            <p>{{ risk['date_identified'] or 'Not recorded' }}</p>
+        </div>
+        <div>
+            <h3>Likelihood</h3>
+            <p>{{ risk['likelihood'] or 'Not specified' }}</p>
+        </div>
+        <div>
+            <h3>Impact</h3>
+            <p>{{ risk['impact'] or 'Not specified' }}</p>
+        </div>
+        <div>
+            <h3>Initial Likelihood</h3>
+            <p>{{ risk['likelihood_initial'] or 'Not specified' }}</p>
+        </div>
+        <div>
+            <h3>Initial Impact</h3>
+            <p>{{ risk['impact_initial'] or 'Not specified' }}</p>
+        </div>
+        <div>
+            <h3>Residual Likelihood</h3>
+            <p>{{ risk['likelihood_residual'] or 'Not specified' }}</p>
+        </div>
+        <div>
+            <h3>Residual Impact</h3>
+            <p>{{ risk['impact_residual'] or 'Not specified' }}</p>
+        </div>
+        <div>
+            <h3>Impact Type</h3>
+            <p>{{ risk['impact_type'] or 'Not specified' }}</p>
+        </div>
+        <div>
+            <h3>Owner</h3>
+            <p>{{ risk['owner'] or 'Unassigned' }}</p>
+        </div>
+        <div>
+            <h3>Mitigation</h3>
+            <p>{{ risk['mitigation'] or 'Not yet provided' }}</p>
+        </div>
+        <div>
+            <h3>Mitigation History</h3>
+            <p>{{ risk['mitigation_history'] or 'Not available' }}</p>
+        </div>
+        <div>
+            <h3>Admin Notes</h3>
+            <p>{{ risk['admin_notes'] or 'No notes yet.' }}</p>
+        </div>
+        <div>
+            <h3>Review Period</h3>
+            <p>{{ risk['review_period'] or 'Not set' }}</p>
+        </div>
+        <div>
+            <h3>Date Last Reviewed</h3>
+            <p>{{ risk['date_last_reviewed'] or 'Not set' }}</p>
+        </div>
+        <div>
+            <h3>Next Review</h3>
+            <p>{{ risk['next_review'] or 'Not set' }}</p>
+        </div>
+        <div>
+            <h3>Date Postponed</h3>
+            <p>{{ risk['date_postponed'] or 'Not applicable' }}</p>
+        </div>
+        <div>
+            <h3>Reason Postponed</h3>
+            <p>{{ risk['reason_postponed'] or 'Not applicable' }}</p>
+        </div>
+        <div>
+            <h3>Date Mitigated</h3>
+            <p>{{ risk['date_mitigated'] or 'Not applicable' }}</p>
+        </div>
+        <div>
+            <h3>Source Sheet</h3>
+            <p>{{ risk['source_sheet'] or 'Manual entry' }}</p>
+        </div>
+    </div>
+
+    <div class="section-block">
+        <div class="section-title">
+            <h3>Attachments</h3>
+            <p class="subtitle">Files uploaded by admins for this risk.</p>
+        </div>
+        {% if attachments %}
+            <div class="attachment-list">
+                {% for a in attachments %}
+                    <div class="attachment">
+                        <div class="attachment-row">
+                            <a href="{{ url_for('risk_attachment_download', risk_id=risk['id'], attachment_id=a['id']) }}">{{ a['original_name'] }}</a>
+                            {% if a['is_archived'] %}
+                                <span class="badge secondary">Archived</span>
+                            {% endif %}
+                        </div>
+                        <small class="muted">{{ (a['size_bytes'] or 0) // 1024 }} KB • {{ (a['created_at'] or '')[:19].replace('T', ' ') }}</small>
+                    </div>
+                {% endfor %}
+            </div>
+        {% else %}
+            <div class="empty">No attachments yet.</div>
+        {% endif %}
+    </div>
+
+    <div class="meta">
+        <span>Created: {{ risk['created_at'][:10] }}</span>
+        <span>Updated: {{ risk['updated_at'][:10] }}</span>
+    </div>
+</section>
+{% endblock %}

@@ -1,0 +1,285 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="card">
+    <div class="detail-header">
+        <div>
+            <h2>{{ risk['title'] }}</h2>
+            <p class="subtitle">Manage risk lifecycle and mitigation.</p>
+        </div>
+        <a class="button" href="{{ url_for('admin_dashboard') }}">Back to dashboard</a>
+    </div>
+
+    <form method="post" class="form">
+        <div class="form-grid">
+            <label>
+                Severity
+                <select name="severity">
+                    {% for option in severity_options %}
+                        <option value="{{ option }}" {% if (risk['severity'] or '') == option %}selected{% endif %}>{{ option }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label>
+                Assigned To
+                <input type="text" name="assigned_to" value="{{ risk['assigned_to'] or '' }}" placeholder="name@hdh.org" />
+            </label>
+        </div>
+        <label>
+            Status
+            <select name="status">
+                {% for option in ['New', 'In Review', 'In Progress', 'Postponed', 'Mitigated', 'Archived', 'Closed'] %}
+                    <option value="{{ option }}" {% if risk['status'] == option %}selected{% endif %}>{{ option }}</option>
+                {% endfor %}
+            </select>
+        </label>
+        <label>
+            Close Reason (required for Closed)
+            <input type="text" name="close_reason" value="{{ risk['close_reason'] or '' }}" placeholder="Resolved, accepted, duplicate, etc" />
+        </label>
+        <label>
+            Owner
+            <input type="text" name="owner" value="{{ risk['owner'] }}" />
+        </label>
+        <label>
+            Priority (1-5)
+            <input type="number" name="priority" min="1" max="5" value="{{ risk['priority'] }}" />
+        </label>
+        <label>
+            Date Identified
+            <input type="text" name="date_identified" value="{{ risk['date_identified'] }}" />
+        </label>
+        <label>
+            Impact Type
+            <input type="text" name="impact_type" value="{{ risk['impact_type'] }}" />
+        </label>
+        <label>
+            Initial Likelihood
+            <select name="likelihood_initial">
+                <option value="">Select</option>
+                {% for option in ['Very Low', 'Low', 'Medium', 'High', 'Very High'] %}
+                    <option value="{{ option }}" {% if risk['likelihood_initial'] == option %}selected{% endif %}>{{ option }}</option>
+                {% endfor %}
+            </select>
+        </label>
+        <label>
+            Initial Impact
+            <select name="impact_initial">
+                <option value="">Select</option>
+                {% for option in ['Very Low', 'Low', 'Medium', 'High', 'Very High'] %}
+                    <option value="{{ option }}" {% if risk['impact_initial'] == option %}selected{% endif %}>{{ option }}</option>
+                {% endfor %}
+            </select>
+        </label>
+        <label>
+            Residual Likelihood
+            <select name="likelihood_residual">
+                <option value="">Select</option>
+                {% for option in ['Very Low', 'Low', 'Medium', 'High', 'Very High'] %}
+                    <option value="{{ option }}" {% if risk['likelihood_residual'] == option %}selected{% endif %}>{{ option }}</option>
+                {% endfor %}
+            </select>
+        </label>
+        <label>
+            Residual Impact
+            <select name="impact_residual">
+                <option value="">Select</option>
+                {% for option in ['Very Low', 'Low', 'Medium', 'High', 'Very High'] %}
+                    <option value="{{ option }}" {% if risk['impact_residual'] == option %}selected{% endif %}>{{ option }}</option>
+                {% endfor %}
+            </select>
+        </label>
+        <label>
+            Review Period
+            <input type="text" name="review_period" value="{{ risk['review_period'] }}" />
+        </label>
+        <label>
+            Date Last Reviewed
+            <input type="text" name="date_last_reviewed" value="{{ risk['date_last_reviewed'] }}" />
+        </label>
+        <label>
+            Next Review
+            <input type="text" name="next_review" value="{{ risk['next_review'] }}" />
+        </label>
+        <label>
+            Date Postponed
+            <input type="text" name="date_postponed" value="{{ risk['date_postponed'] }}" />
+        </label>
+        <label>
+            Reason Postponed
+            <input type="text" name="reason_postponed" value="{{ risk['reason_postponed'] }}" />
+        </label>
+        <label>
+            Date Mitigated
+            <input type="text" name="date_mitigated" value="{{ risk['date_mitigated'] }}" />
+        </label>
+        <label>
+            Mitigation History
+            <textarea name="mitigation_history" rows="3">{{ risk['mitigation_history'] }}</textarea>
+        </label>
+        <label>
+            Mitigation Plan
+            <textarea name="mitigation" rows="4">{{ risk['mitigation'] }}</textarea>
+        </label>
+        <label>
+            Admin Notes
+            <textarea name="admin_notes" rows="4">{{ risk['admin_notes'] }}</textarea>
+        </label>
+        <label>
+            Progress (%)
+            <input type="number" name="progress" min="0" max="100" value="{{ risk['progress'] }}" />
+        </label>
+        <button type="submit">Save Updates</button>
+    </form>
+
+    <div class="section-block">
+        <div class="section-title">
+            <h3>Attachments</h3>
+            <p class="subtitle">Upload supporting files (PDF, images, Office docs). Max {{ config.get('MAX_CONTENT_LENGTH', 0) // (1024*1024) }}MB per request.</p>
+        </div>
+        <form method="post" action="{{ url_for('admin_upload_attachments', risk_id=risk['id']) }}" enctype="multipart/form-data" class="attachment-upload">
+            <input type="file" name="files" multiple />
+            <button type="submit">Upload</button>
+        </form>
+        {% if attachments %}
+            <div class="attachment-list">
+                {% for a in attachments %}
+                    <div class="attachment">
+                        <div class="attachment-row">
+                            <a href="{{ url_for('risk_attachment_download', risk_id=risk['id'], attachment_id=a['id']) }}">{{ a['original_name'] }}</a>
+                            {% if a['is_archived'] %}
+                                <span class="badge secondary">Archived</span>
+                            {% endif %}
+                            <form method="post" action="{{ url_for('admin_delete_attachment', risk_id=risk['id'], attachment_id=a['id']) }}" onsubmit="return confirm('Delete this attachment?');">
+                                <button type="submit" class="button secondary">Delete</button>
+                            </form>
+                        </div>
+                        <small class="muted">{{ (a['size_bytes'] or 0) // 1024 }} KB • {{ (a['uploaded_by'] or 'system') }} • {{ (a['created_at'] or '')[:19].replace('T', ' ') }}</small>
+                    </div>
+                {% endfor %}
+            </div>
+        {% else %}
+            <div class="empty">No attachments yet.</div>
+        {% endif %}
+    </div>
+
+    <div class="section-block">
+        <div class="section-title">
+            <h3>Audit Trail</h3>
+            <p class="subtitle">Recent changes to status, severity, assignment, and progress.</p>
+        </div>
+        {% if events %}
+            <div class="event-list">
+                {% for ev in events %}
+                    <div class="event">
+                        <div class="event-meta">
+                            <span class="badge">{{ ev['event_type'] }}</span>
+                            <span class="event-actor">{{ ev['actor'] or 'system' }}</span>
+                            <span class="event-time">{{ ev['created_at'][:19].replace('T', ' ') }}</span>
+                        </div>
+                        {% if ev['field'] %}
+                            <div class="event-body">
+                                <strong>{{ ev['field'] }}</strong>
+                                <span class="event-diff">{{ ev['old_value'] or '—' }} → {{ ev['new_value'] or '—' }}</span>
+                            </div>
+                        {% else %}
+                            <div class="event-body">
+                                <span class="event-diff">Created</span>
+                            </div>
+                        {% endif %}
+                    </div>
+                {% endfor %}
+            </div>
+        {% else %}
+            <div class="empty">No activity recorded yet.</div>
+        {% endif %}
+    </div>
+
+    <div class="detail-grid">
+        <div>
+            <h3>Description</h3>
+            <p>{{ risk['description'] }}</p>
+        </div>
+        <div>
+            <h3>Severity</h3>
+            <p>{{ risk['severity'] or 'Unspecified' }}</p>
+        </div>
+        <div>
+            <h3>Assigned To</h3>
+            <p>{{ risk['assigned_to'] or 'Unassigned' }}</p>
+        </div>
+        <div>
+            <h3>Priority</h3>
+            <p>{{ risk['priority'] or 'Not set' }}</p>
+        </div>
+        <div>
+            <h3>Date Identified</h3>
+            <p>{{ risk['date_identified'] or 'Not recorded' }}</p>
+        </div>
+        <div>
+            <h3>Likelihood</h3>
+            <p>{{ risk['likelihood'] or 'Not specified' }}</p>
+        </div>
+        <div>
+            <h3>Impact</h3>
+            <p>{{ risk['impact'] or 'Not specified' }}</p>
+        </div>
+        <div>
+            <h3>Initial Likelihood</h3>
+            <p>{{ risk['likelihood_initial'] or 'Not specified' }}</p>
+        </div>
+        <div>
+            <h3>Initial Impact</h3>
+            <p>{{ risk['impact_initial'] or 'Not specified' }}</p>
+        </div>
+        <div>
+            <h3>Residual Likelihood</h3>
+            <p>{{ risk['likelihood_residual'] or 'Not specified' }}</p>
+        </div>
+        <div>
+            <h3>Residual Impact</h3>
+            <p>{{ risk['impact_residual'] or 'Not specified' }}</p>
+        </div>
+        <div>
+            <h3>Impact Type</h3>
+            <p>{{ risk['impact_type'] or 'Not specified' }}</p>
+        </div>
+        <div>
+            <h3>Review Period</h3>
+            <p>{{ risk['review_period'] or 'Not set' }}</p>
+        </div>
+        <div>
+            <h3>Date Last Reviewed</h3>
+            <p>{{ risk['date_last_reviewed'] or 'Not set' }}</p>
+        </div>
+        <div>
+            <h3>Next Review</h3>
+            <p>{{ risk['next_review'] or 'Not set' }}</p>
+        </div>
+        <div>
+            <h3>Date Postponed</h3>
+            <p>{{ risk['date_postponed'] or 'Not applicable' }}</p>
+        </div>
+        <div>
+            <h3>Reason Postponed</h3>
+            <p>{{ risk['reason_postponed'] or 'Not applicable' }}</p>
+        </div>
+        <div>
+            <h3>Date Mitigated</h3>
+            <p>{{ risk['date_mitigated'] or 'Not applicable' }}</p>
+        </div>
+        <div>
+            <h3>Mitigation History</h3>
+            <p>{{ risk['mitigation_history'] or 'Not available' }}</p>
+        </div>
+        <div>
+            <h3>Closed At</h3>
+            <p>{{ (risk['closed_at'] or '')[:19].replace('T', ' ') if risk['closed_at'] else '—' }}</p>
+        </div>
+        <div>
+            <h3>Close Reason</h3>
+            <p>{{ risk['close_reason'] or '—' }}</p>
+        </div>
+    </div>
+</section>
+{% endblock %}

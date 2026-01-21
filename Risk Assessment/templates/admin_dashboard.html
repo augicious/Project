@@ -1,0 +1,267 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="card">
+    <div class="detail-header">
+        <div>
+            <h2>Admin Dashboard</h2>
+            <p class="subtitle">Review and update submitted risks.</p>
+        </div>
+        <div class="button-row">
+            <form method="post" action="{{ url_for('admin_import') }}">
+                <button type="submit">Import Risk Register</button>
+            </form>
+            <form method="post" action="{{ url_for('admin_archive_closed_attachments') }}">
+                <input type="hidden" name="days" value="{{ config.get('ATTACHMENT_ARCHIVE_AFTER_DAYS', 180) }}" />
+                <button type="submit" class="button secondary" title="Moves attachments for Closed risks older than the cutoff into archive storage.">Archive old attachments</button>
+            </form>
+            <a class="button secondary" href="{{ url_for('admin_export_csv', status=status_filter, severity=severity_filter, assigned=assignee_filter, q=query_text) }}">Export CSV</a>
+            <a class="button" href="{{ url_for('admin_logout') }}">Logout</a>
+        </div>
+    </div>
+
+    <div class="dashboard-grid">
+        <div class="section-block">
+            <div class="section-title">
+                <h3>Queue</h3>
+                <p class="subtitle">Quick counts for triage and workload.</p>
+            </div>
+            <div class="summary-grid">
+                {% for label, count in queue_cards.items() %}
+                    <a class="summary-card link" href="{{ queue_links.get(label) or '#' }}">
+                        <span class="label">{{ label }}</span>
+                        <strong>{{ count }}</strong>
+                    </a>
+                {% endfor %}
+            </div>
+        </div>
+
+        <div class="section-block">
+            <div class="section-title">
+                <h3>SLA</h3>
+                <p class="subtitle">Measured from the audit trail (risk events).</p>
+            </div>
+            <div class="summary-grid">
+                {% for label, value in sla_cards.items() %}
+                    <div class="summary-card">
+                        <span class="label">{{ label }}</span>
+                        <strong>{{ value }}</strong>
+                    </div>
+                {% endfor %}
+            </div>
+        </div>
+
+        <div class="section-block">
+            <div class="section-title">
+                <h3>Overview</h3>
+                <p class="subtitle">Live status totals across submitted risks.</p>
+            </div>
+            <div class="summary-grid">
+                {% for item in summary %}
+                    <div class="summary-card">
+                        <span class="label">{{ item['status'] }}</span>
+                        <strong>{{ item['count'] }}</strong>
+                    </div>
+                {% endfor %}
+            </div>
+        </div>
+
+        <div class="section-block">
+            <div class="section-title">
+                <h3>Severity</h3>
+                <p class="subtitle">Distribution across current risks.</p>
+            </div>
+            <div class="summary-grid">
+                {% for item in severity_summary %}
+                    <div class="summary-card">
+                        <span class="label">{{ item['severity'] }}</span>
+                        <strong>{{ item['count'] }}</strong>
+                    </div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+
+    <div class="section-block">
+        <div class="section-title">
+            <h3>Key performance indicators</h3>
+            <p class="subtitle">Operational KPIs for the risk program.</p>
+        </div>
+        {% if kpi_chosen %}
+            <div class="kpi-grid">
+                {% for kpi in kpi_chosen %}
+                    <div class="kpi-card">
+                        <span class="label">{{ kpi['name'] }}</span>
+                        <strong>{{ kpi['value'] or '—' }}</strong>
+                        {% if kpi['notes'] and not kpi.get('is_formula') %}
+                            <small class="kpi-muted">{{ kpi['notes'] }}</small>
+                        {% endif %}
+                    </div>
+                {% endfor %}
+            </div>
+            <p class="kpi-footnote">KPIs are calculated from current register data and update automatically.</p>
+        {% else %}
+            <div class="empty">No KPI metrics are available yet.</div>
+        {% endif %}
+
+        {% if kpi_potential %}
+            <details class="details section-block" open>
+                <summary>Dashboard Summary</summary>
+                <div class="details-body">
+                    <div class="summary-grid">
+                        <div class="summary-card">
+                            <div class="label">Total Risks</div>
+                            <div class="value">{{ metrics.total }}</div>
+                        </div>
+                        <div class="summary-card">
+                            <div class="label">Open</div>
+                            <div class="value">{{ metrics.open }}</div>
+                        </div>
+                        <div class="summary-card">
+                            <div class="label">Closed</div>
+                            <div class="value">{{ metrics.closed }}</div>
+                        </div>
+                        <div class="summary-card">
+                            <div class="label">Critical Open</div>
+                            <div class="value">{{ metrics.critical_open }}</div>
+                        </div>
+                    </div>
+
+                    <details class="details" style="margin-top: 14px;">
+                        <summary>More KPIs</summary>
+                        <div class="details-body">
+                            <div class="dashboard-grid" style="margin-top: 14px;">
+                                <div class="summary-card">
+                                    <div class="label">Avg Time to Close (days)</div>
+                                    <div class="value">{{ metrics.avg_close_days or '—' }}</div>
+                                </div>
+                                <div class="summary-card">
+                                    <div class="label">Oldest Open (days)</div>
+                                    <div class="value">{{ metrics.oldest_open_days or '—' }}</div>
+                                </div>
+                                <div class="summary-card">
+                                    <div class="label">SLA Breaches</div>
+                                    <div class="value">{{ metrics.sla_breaches }}</div>
+                                </div>
+                                <div class="summary-card">
+                                    <div class="label">Unassigned Open</div>
+                                    <div class="value">{{ metrics.unassigned_open }}</div>
+                                </div>
+                            </div>
+                        </div>
+                    </details>
+                </div>
+            </details>
+        {% endif %}
+
+    <form class="bulk-actions" method="post" action="{{ url_for('admin_bulk_update') }}">
+        <input type="hidden" name="return_to" value="{{ request.full_path }}" />
+        <div class="bulk-row">
+            <label>
+                Bulk Status
+                <select name="bulk_status">
+                    <option value="">No change</option>
+                    {% for option in ['New', 'In Review', 'In Progress', 'Postponed', 'Mitigated', 'Archived', 'Closed'] %}
+                        <option value="{{ option }}">{{ option }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label>
+                Bulk Severity
+                <select name="bulk_severity">
+                    <option value="">No change</option>
+                    {% for sev in severities %}
+                        <option value="{{ sev }}">{{ sev }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label>
+                Bulk Assignee
+                <input type="text" name="bulk_assigned_to" placeholder="name@hdh.org" />
+            </label>
+            <label class="bulk-inline">
+                <span>Clear assignee</span>
+                <input type="checkbox" name="bulk_clear_assigned_to" value="1" />
+            </label>
+            <label>
+                Bulk Close Reason
+                <input type="text" name="bulk_close_reason" placeholder="Required if setting Closed" />
+            </label>
+            <div class="bulk-cta">
+                <div class="bulk-count"><span id="selected-count">0</span> selected</div>
+                <button type="submit" id="bulk-apply" disabled>Apply to selected</button>
+            </div>
+        </div>
+
+        <div class="table">
+        <div class="table-row table-header admin-list">
+            <div class="select-cell">
+                <input type="checkbox" id="select-all" title="Select all" />
+            </div>
+            <div>Title</div>
+            <div>Severity</div>
+            <div>Status</div>
+            <div>Assigned</div>
+            <div>Owner</div>
+            <div>Priority</div>
+            <div>Progress</div>
+            <div>Identified</div>
+            <div>Updated</div>
+        </div>
+        {% for risk in risks %}
+            <div class="table-row admin-list">
+                <div class="select-cell">
+                    <input type="checkbox" name="risk_id" value="{{ risk['id'] }}" class="row-select" />
+                </div>
+                <div class="title">
+                    <a href="{{ url_for('admin_risk_detail', risk_id=risk['id']) }}">{{ risk['title'] }}</a>
+                </div>
+                <div>
+                    <span class="badge severity {{ (risk['severity'] or 'unspecified')|lower }}">{{ risk['severity'] or 'Unspecified' }}</span>
+                </div>
+                <div>
+                    <span class="badge status">{{ risk['status'] }}</span>
+                </div>
+                <div>{{ risk['assigned_to'] or '—' }}</div>
+                <div>{{ risk['owner'] or 'Unassigned' }}</div>
+                <div>{{ risk['priority'] or '—' }}</div>
+                <div>
+                    <progress class="progress" value="{{ risk['progress'] or 0 }}" max="100"></progress>
+                    <small>{{ risk['progress'] }}%</small>
+                </div>
+                <div>{{ (risk['date_identified'] or '')[:10] }}</div>
+                <div>{{ risk['updated_at'][:10] }}</div>
+            </div>
+        {% else %}
+            <div class="empty">No risks to review.</div>
+        {% endfor %}
+        </div>
+    </form>
+
+    <script>
+        (function () {
+            const selectAll = document.getElementById('select-all');
+            if (!selectAll) return;
+            const rows = Array.from(document.querySelectorAll('input.row-select'));
+            const selectedCount = document.getElementById('selected-count');
+            const bulkApply = document.getElementById('bulk-apply');
+
+            function updateState() {
+                const checked = rows.filter(cb => cb.checked).length;
+                if (selectedCount) selectedCount.textContent = String(checked);
+                if (bulkApply) bulkApply.disabled = checked === 0;
+                selectAll.checked = checked > 0 && checked === rows.length;
+                selectAll.indeterminate = checked > 0 && checked < rows.length;
+            }
+
+            selectAll.addEventListener('change', function () {
+                rows.forEach(cb => { cb.checked = selectAll.checked; });
+                updateState();
+            });
+
+            rows.forEach(cb => cb.addEventListener('change', updateState));
+            updateState();
+        })();
+    </script>
+</section>
+{% endblock %}

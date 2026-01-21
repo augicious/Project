@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="card">
+    <h2>Risk Register</h2>
+    <div class="summary-grid">
+        {% for item in summary %}
+            <div class="summary-card">
+                <span class="label">{{ item['status'] }}</span>
+                <strong>{{ item['count'] }}</strong>
+            </div>
+        {% endfor %}
+    </div>
+    {% if kpi_chosen %}
+        <div class="section-block">
+            <div class="section-title">
+                <h3>Key performance indicators</h3>
+                <p class="subtitle">Executive view of current risk performance.</p>
+            </div>
+            <div class="kpi-grid">
+                {% for kpi in kpi_chosen %}
+                    <div class="kpi-card">
+                        <span class="label">{{ kpi['name'] }}</span>
+                        <strong>{{ kpi['value'] or '—' }}</strong>
+                    </div>
+                {% endfor %}
+            </div>
+        </div>
+    {% endif %}
+    <form class="filters" method="get">
+        <label>
+            Status
+            <select name="status">
+                <option value="all" {% if status_filter == 'all' %}selected{% endif %}>All</option>
+                {% for status in statuses %}
+                    <option value="{{ status }}" {% if status_filter == status %}selected{% endif %}>{{ status }}</option>
+                {% endfor %}
+            </select>
+        </label>
+        <label>
+            Owner
+            <select name="owner">
+                <option value="all" {% if owner_filter == 'all' %}selected{% endif %}>All</option>
+                {% for owner in owners %}
+                    <option value="{{ owner }}" {% if owner_filter == owner %}selected{% endif %}>{{ owner }}</option>
+                {% endfor %}
+            </select>
+        </label>
+        <label>
+            Source Sheet
+            <select name="sheet">
+                <option value="all" {% if sheet_filter == 'all' %}selected{% endif %}>All</option>
+                {% for sheet in sheets %}
+                    <option value="{{ sheet }}" {% if sheet_filter == sheet %}selected{% endif %}>{{ sheet }}</option>
+                {% endfor %}
+            </select>
+        </label>
+        <button type="submit">Apply</button>
+    </form>
+
+    <div class="table">
+        <div class="table-row table-header risk-list">
+            <div>Title</div>
+            <div>Severity</div>
+            <div>Status</div>
+            <div>Owner</div>
+            <div>Priority</div>
+            <div>Progress</div>
+            <div>Identified</div>
+            <div>Updated</div>
+        </div>
+        {% for risk in risks %}
+            <a class="table-row risk-list" href="{{ url_for('risk_detail', risk_id=risk['id']) }}">
+                <div class="title">{{ risk['title'] }}</div>
+                <div>
+                    <span class="badge severity {{ (risk['severity'] or 'unspecified')|lower }}">{{ risk['severity'] or 'Unspecified' }}</span>
+                </div>
+                <div>
+                    <span class="badge status">{{ risk['status'] }}</span>
+                </div>
+                <div>{{ risk['owner'] or 'Unassigned' }}</div>
+                <div>{{ risk['priority'] or '—' }}</div>
+                <div>
+                    <progress class="progress" value="{{ risk['progress'] or 0 }}" max="100"></progress>
+                    <small>{{ risk['progress'] }}%</small>
+                </div>
+                <div>{{ (risk['date_identified'] or '')[:10] }}</div>
+                <div>{{ risk['updated_at'][:10] }}</div>
+            </a>
+        {% else %}
+            <div class="empty">No risks found.</div>
+        {% endfor %}
+    </div>
+</section>
+{% endblock %}

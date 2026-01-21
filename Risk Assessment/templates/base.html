@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#2b5fdd" />
+    <title>Risk Ticketing System</title>
+    <link rel="icon" href="{{ url_for('static', filename='icons/favicon.ico') }}" sizes="any" />
+    <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='icons/favicon-32.png') }}" />
+    <link rel="icon" type="image/png" sizes="16x16" href="{{ url_for('static', filename='icons/favicon-16.png') }}" />
+    <link rel="apple-touch-icon" sizes="180x180" href="{{ url_for('static', filename='icons/apple-touch-icon.png') }}" />
+    <link rel="manifest" href="{{ url_for('static', filename='site.webmanifest') }}" />
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css', v=config.get('APP_VERSION','')) }}" />
+</head>
+<body>
+    <header class="site-header">
+        <div class="container header-content">
+            <div class="brand">
+                <img class="brand-icon" src="{{ url_for('static', filename='icons/app-icon.png') }}" alt="HDH RISKS" width="40" height="40" />
+                <div class="brand-text">
+                    <h1>Risk Ticketing</h1>
+                    <p class="subtitle">Capture, review, and mitigate risks</p>
+                </div>
+            </div>
+            <nav class="nav-actions">
+                <a href="{{ url_for('index') }}">Risks</a>
+                <a href="{{ url_for('submit') }}">Submit Risk</a>
+                <a href="{{ url_for('admin') }}">Admin</a>
+                {% if session.get('user') %}
+                    <span class="nav-user" title="Signed in">{{ session['user'].get('preferred_username') or session['user'].get('name') }}</span>
+                    <a class="nav-logout" href="{{ url_for('logout') }}">Logout</a>
+                {% else %}
+                    <a class="nav-login" href="{{ url_for('login') }}">Login</a>
+                {% endif %}
+            </nav>
+        </div>
+    </header>
+
+    <main class="container">
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                <div class="alerts">
+                    {% for category, message in messages %}
+                        <div class="alert {{ category }}">{{ message }}</div>
+                    {% endfor %}
+                </div>
+            {% endif %}
+        {% endwith %}
+
+        {% block content %}{% endblock %}
+    </main>
+
+    <footer class="site-footer">
+        <div class="container">
+            <span class="muted">Version {{ config.get('APP_VERSION', 'dev') }}</span>
+        </div>
+    </footer>
+
+</body>
+</html>

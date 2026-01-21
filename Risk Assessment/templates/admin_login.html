@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="card narrow">
+    <h2>Admin Login</h2>
+    <form method="post" class="form">
+        <label>
+            Admin Password
+            <input type="password" name="password" required />
+        </label>
+        <button type="submit">Login</button>
+    </form>
+</section>
+{% endblock %}
