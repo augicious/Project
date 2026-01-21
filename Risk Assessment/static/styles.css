@@ -812,6 +812,57 @@ button:disabled,
     transition: transform 120ms ease, border-color 120ms ease;
 }
 
+/* Dashboard mini-icons (pure CSS, no asset dependency) */
+.summary-card[data-kind] {
+    position: relative;
+    padding-left: 44px;
+}
+.summary-card[data-kind]::before {
+    content: "";
+    position: absolute;
+    left: 14px;
+    top: 14px;
+    width: 18px;
+    height: 18px;
+    border-radius: 6px;
+    border: 1px solid rgba(255,255,255,0.16);
+    background: rgba(255,255,255,0.06);
+    box-shadow: 0 8px 24px rgba(0,0,0,0.25);
+}
+.summary-card[data-kind]::after {
+    position: absolute;
+    left: 18px;
+    top: 12px;
+    font-size: 14px;
+    opacity: 0.9;
+}
+.summary-card[data-kind="unassigned"]::after { content: "◎"; }
+.summary-card[data-kind="assigned"]::after { content: "✓"; }
+.summary-card[data-kind="critical"]::after { content: "!"; }
+.summary-card[data-kind="open"]::after { content: "○"; }
+.summary-card[data-kind="closed"]::after { content: "●"; }
+.summary-card[data-kind="median-first-touch"]::after { content: "⏱"; }
+.summary-card[data-kind="median-close"]::after { content: "⌁"; }
+
+/* Pagination */
+.pager {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-top: 12px;
+    padding-top: 10px;
+    border-top: 1px solid rgba(255,255,255,0.10);
+}
+.pager .muted {
+    color: rgba(255,255,255,0.72);
+    font-size: 13px;
+}
+.pager-right {
+    display: flex;
+    gap: 8px;
+}
+
 .section-block .summary-card {
     background: rgba(7, 11, 22, 0.28);
     border-color: rgba(226, 232, 240, 0.24);
@@ -966,4 +1017,220 @@ button:disabled,
     text-align: center;
     color: var(--muted);
     padding: 24px;
+}
+
+/* -----------------------------
+   Mobile responsiveness
+   ----------------------------- */
+
+@media (max-width: 900px) {
+    .container {
+        padding: 18px;
+    }
+
+    .header-content {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 12px;
+    }
+
+    .nav-actions {
+        flex-wrap: wrap;
+        justify-content: flex-start;
+        gap: 10px;
+    }
+
+    .nav-actions a {
+        padding: 8px 10px;
+    }
+
+    .detail-header {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .button-row {
+        flex-wrap: wrap;
+        justify-content: flex-start;
+    }
+
+    .pager {
+        flex-wrap: wrap;
+        align-items: flex-start;
+    }
+}
+
+@media (max-width: 720px) {
+    .container {
+        padding: 14px;
+    }
+
+    .card {
+        padding: 16px;
+    }
+
+    .brand-icon {
+        width: 34px;
+        height: 34px;
+    }
+
+    .brand h1 {
+        font-size: 1rem;
+    }
+
+    .brand .subtitle {
+        font-size: 0.85rem;
+    }
+
+    button,
+    .button {
+        padding: 10px 14px;
+    }
+
+    .filters {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .filters label,
+    .filters select,
+    .filters input {
+        width: 100%;
+    }
+
+    .filters button {
+        width: 100%;
+    }
+
+    .bulk-row {
+        grid-template-columns: 1fr;
+        align-items: stretch;
+    }
+
+    .bulk-cta {
+        align-items: stretch;
+    }
+
+    .bulk-cta button {
+        width: 100%;
+    }
+
+    .meta {
+        flex-wrap: wrap;
+    }
+}
+
+@media (max-width: 520px) {
+    /* Make the sticky header less tall on phones */
+    .site-header {
+        backdrop-filter: blur(8px);
+    }
+
+    .nav-user {
+        width: 100%;
+        border-radius: 10px;
+    }
+
+    .nav-actions a {
+        flex: 1 1 auto;
+        text-align: center;
+    }
+
+    /* Tables become “mobile cards”: hide header row + collapse columns */
+    .table-row.table-header {
+        display: none;
+        position: static;
+    }
+
+    .table {
+        gap: 10px;
+    }
+
+    .table-row {
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+        padding: 12px 12px;
+        align-items: start;
+    }
+
+    /* Reduce column panel chrome on mobile (less visual noise) */
+    .table-row.admin-list > div,
+    .table-row.risk-list > div {
+        padding: 4px 6px;
+        background: transparent;
+        box-shadow: none;
+    }
+
+    /* Risk register list (index): show Title, Severity, Status, Owner, Updated */
+    .table-row.risk-list > div:nth-child(1) {
+        grid-column: 1 / -1;
+        padding-bottom: 2px;
+    }
+    .table-row.risk-list > div:nth-child(5),
+    .table-row.risk-list > div:nth-child(6),
+    .table-row.risk-list > div:nth-child(7) {
+        display: none;
+    }
+    .table-row.risk-list > div:nth-child(4) {
+        grid-column: 1;
+    }
+    .table-row.risk-list > div:nth-child(8) {
+        grid-column: 2;
+        text-align: right;
+        color: rgba(226, 232, 240, 0.8);
+        font-weight: 600;
+    }
+
+    /* Admin list: keep checkbox + Title, Severity, Status, Assigned, Updated */
+    .table-row.admin-list {
+        grid-template-columns: 1fr auto;
+    }
+    .table-row.admin-list .select-cell {
+        grid-column: 2;
+        grid-row: 1;
+        justify-content: flex-end;
+    }
+    .table-row.admin-list > div:nth-child(2) {
+        grid-column: 1;
+        grid-row: 1;
+    }
+    .table-row.admin-list > div:nth-child(3) {
+        grid-column: 1;
+        grid-row: 2;
+    }
+    .table-row.admin-list > div:nth-child(4) {
+        grid-column: 2;
+        grid-row: 2;
+        text-align: right;
+    }
+    .table-row.admin-list > div:nth-child(5) {
+        grid-column: 1 / -1;
+        grid-row: 3;
+        color: rgba(226, 232, 240, 0.9);
+    }
+    .table-row.admin-list > div:nth-child(10) {
+        grid-column: 1 / -1;
+        grid-row: 4;
+        color: rgba(226, 232, 240, 0.78);
+        font-weight: 600;
+    }
+    .table-row.admin-list > div:nth-child(6),
+    .table-row.admin-list > div:nth-child(7),
+    .table-row.admin-list > div:nth-child(8),
+    .table-row.admin-list > div:nth-child(9) {
+        display: none;
+    }
+
+    .pager {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .pager-right {
+        justify-content: space-between;
+    }
+
+    .pager-right .button {
+        flex: 1 1 auto;
+    }
 }

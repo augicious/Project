@@ -28,7 +28,7 @@
             </div>
             <div class="summary-grid">
                 {% for label, count in queue_cards.items() %}
-                    <a class="summary-card link" href="{{ queue_links.get(label) or '#' }}">
+                    <a class="summary-card link" data-kind="{{ label|lower|replace('/', '-')|replace(' ', '-') }}" href="{{ queue_links.get(label) or '#' }}">
                         <span class="label">{{ label }}</span>
                         <strong>{{ count }}</strong>
                     </a>
@@ -43,7 +43,7 @@
             </div>
             <div class="summary-grid">
                 {% for label, value in sla_cards.items() %}
-                    <div class="summary-card">
+                    <div class="summary-card" data-kind="{{ label|lower|replace(' ', '-') }}">
                         <span class="label">{{ label }}</span>
                         <strong>{{ value }}</strong>
                     </div>
@@ -80,6 +80,14 @@
                 {% endfor %}
             </div>
         </div>
+    </div>
+
+    <div class="badge-legend" aria-label="Legend" style="margin-top: 10px;">
+        <span class="badge status">Status</span>
+        <span class="badge severity low">Low</span>
+        <span class="badge severity medium">Medium</span>
+        <span class="badge severity high">High</span>
+        <span class="badge severity critical">Critical</span>
     </div>
 
     <div class="section-block">
@@ -214,7 +222,7 @@
                     <input type="checkbox" name="risk_id" value="{{ risk['id'] }}" class="row-select" />
                 </div>
                 <div class="title">
-                    <a href="{{ url_for('admin_risk_detail', risk_id=risk['id']) }}">{{ risk['title'] }}</a>
+                    <a href="{{ url_for('admin_risk_detail', risk_id=risk['id']) }}" title="{{ risk['title'] }}">{{ risk['title'] }}</a>
                 </div>
                 <div>
                     <span class="badge severity {{ (risk['severity'] or 'unspecified')|lower }}">{{ risk['severity'] or 'Unspecified' }}</span>
@@ -237,6 +245,20 @@
         {% endfor %}
         </div>
     </form>
+
+    <div class="pager" aria-label="Pagination">
+        <div class="pager-left">
+            <span class="muted">Showing page {{ pagination.page }} of {{ pagination.pages }} ({{ pagination.total }} total)</span>
+        </div>
+        <div class="pager-right">
+            {% if pagination.has_prev %}
+                <a class="button secondary" href="{{ pagination.prev_url }}">Previous</a>
+            {% endif %}
+            {% if pagination.has_next %}
+                <a class="button secondary" href="{{ pagination.next_url }}">Next</a>
+            {% endif %}
+        </div>
+    </div>
 
     <script>
         (function () {

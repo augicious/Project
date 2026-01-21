@@ -468,7 +468,55 @@ def init_db() -> None:
                 )
             except sqlite3.OperationalError:
                 pass
+
+        # Indexes (safe no-ops if they already exist). These dramatically help filter/sort performance.
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_risks_updated_at ON risks(updated_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_risks_status ON risks(status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_risks_severity ON risks(severity)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_risks_owner ON risks(owner)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_risks_assigned_to ON risks(assigned_to)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_risks_source_sheet ON risks(source_sheet)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_risk_events_risk_type_created ON risk_events(risk_id, event_type, created_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_risk_attachments_risk_id ON risk_attachments(risk_id)")
         conn.commit()
+
+
+def _parse_pagination(*, default_per_page: int = 50, max_per_page: int = 200) -> tuple[int, int]:
+    try:
+        page = int(float(request.args.get("page", "1")))
+    except ValueError:
+        page = 1
+    try:
+        per_page = int(float(request.args.get("per_page", str(default_per_page))))
+    except ValueError:
+        per_page = default_per_page
+
+    page = max(1, page)
+    per_page = max(1, min(max_per_page, per_page))
+    return page, per_page
+
+
+def _pager(*, total: int, page: int, per_page: int) -> dict[str, int | bool | str | None]:
+    pages = max(1, (max(0, total) + per_page - 1) // per_page)
+    page = min(max(1, page), pages)
+    return {
+        "page": page,
+        "per_page": per_page,
+        "total": total,
+        "pages": pages,
+        "has_prev": page > 1,
+        "has_next": page < pages,
+        "prev_url": None,
+        "next_url": None,
+    }
+
+
+def _where_join(base_where_sql: str, condition_sql: str) -> str:
+    if not condition_sql.strip():
+        return base_where_sql
+    if base_where_sql.strip():
+        return base_where_sql + " AND " + condition_sql
+    return " WHERE " + condition_sql
 
 
 def _normalize_header(header: str) -> str:
@@ -971,6 +1019,43 @@ def _build_admin_risks_query(
     return query, params
 
 
+def _build_admin_risks_where(
+    *,
+    status_filter: str,
+    severity_filter: str,
+    assignee_filter: str,
+    query_text: str,
+    current_user: str,
+) -> tuple[str, list[str]]:
+    filters: list[str] = []
+    params: list[str] = []
+
+    if status_filter != "all":
+        filters.append("LOWER(TRIM(status)) = ?")
+        params.append(status_filter.lower())
+    if severity_filter != "all":
+        filters.append("LOWER(TRIM(COALESCE(severity, ''))) = ?")
+        params.append(severity_filter.lower())
+
+    if assignee_filter == "me" and current_user:
+        filters.append("LOWER(TRIM(COALESCE(assigned_to, ''))) = ?")
+        params.append(current_user.strip().lower())
+    elif assignee_filter == "unassigned":
+        filters.append("TRIM(COALESCE(assigned_to, '')) = ''")
+    elif assignee_filter != "all":
+        filters.append("LOWER(TRIM(COALESCE(assigned_to, ''))) = ?")
+        params.append(assignee_filter.lower())
+
+    if query_text:
+        filters.append("(LOWER(title) LIKE ? OR LOWER(description) LIKE ?)")
+        like = f"%{query_text.lower()}%"
+        params.extend([like, like])
+
+    if filters:
+        return " WHERE " + " AND ".join(filters), params
+    return "", params
+
+
 def _match_kpi_metric(name: str) -> str | None:
     text = " ".join((name or "").strip().lower().split())
     if not text:
@@ -1117,6 +1202,7 @@ def index():
     status_filter = request.args.get("status", "all").strip()
     owner_filter = request.args.get("owner", "all").strip()
     sheet_filter = request.args.get("sheet", "all").strip()
+    page, per_page = _parse_pagination(default_per_page=50)
     query = "SELECT * FROM risks"
     filters = []
     params = []
@@ -1132,10 +1218,17 @@ def index():
         params.append(sheet_filter.lower())
     if filters:
         query += " WHERE " + " AND ".join(filters)
+    where_sql = (" WHERE " + " AND ".join(filters)) if filters else ""
     query += " ORDER BY updated_at DESC"
 
+    paged_query = query + " LIMIT ? OFFSET ?"
+    offset = (page - 1) * per_page
+
     with get_db_connection() as conn:
-        risks = conn.execute(query, params).fetchall()
+        total = int(conn.execute(f"SELECT COUNT(*) FROM risks{where_sql}", params).fetchone()[0])
+        pager = _pager(total=total, page=page, per_page=per_page)
+        offset = (int(pager["page"]) - 1) * per_page
+        risks = conn.execute(paged_query, params + [per_page, offset]).fetchall()
         statuses = [
             row["status"]
             for row in conn.execute(
@@ -1156,7 +1249,21 @@ def index():
         ]
         kpis = conn.execute("SELECT * FROM kpis ORDER BY id ASC").fetchall()
         kpi_potential, kpi_chosen = _split_kpis(kpis)
-        computed_kpis = _compute_kpi_metrics(risks)
+        kpi_rows = conn.execute(
+            f"""
+            SELECT
+                status,
+                likelihood_initial,
+                impact_initial,
+                likelihood_residual,
+                impact_residual,
+                date_identified,
+                date_mitigated
+            FROM risks{where_sql}
+            """,
+            params,
+        ).fetchall()
+        computed_kpis = _compute_kpi_metrics(kpi_rows)
         for kpi in kpi_chosen:
             metric_key = _match_kpi_metric(kpi.get("name", ""))
             if metric_key and metric_key in computed_kpis:
@@ -1171,6 +1278,17 @@ def index():
             """
         ).fetchall()
 
+    query_args = {
+        "status": status_filter,
+        "owner": owner_filter,
+        "sheet": sheet_filter,
+        "per_page": int(pager["per_page"]),
+    }
+    if pager.get("has_prev"):
+        pager["prev_url"] = url_for("index", **query_args, page=int(pager["page"]) - 1)
+    if pager.get("has_next"):
+        pager["next_url"] = url_for("index", **query_args, page=int(pager["page"]) + 1)
+
     return render_template(
         "index.html",
         risks=risks,
@@ -1182,6 +1300,8 @@ def index():
         status_filter=status_filter,
         owner_filter=owner_filter,
         sheet_filter=sheet_filter,
+        pagination=pager,
+        query_args=query_args,
     )
 
 
@@ -1468,9 +1588,10 @@ def admin_dashboard():
     severity_filter = request.args.get("severity", "all").strip()
     assignee_filter = request.args.get("assigned", "all").strip()
     query_text = request.args.get("q", "").strip()
+    page, per_page = _parse_pagination(default_per_page=50)
 
     current_user = str((session.get("user") or {}).get("preferred_username") or "").strip()
-    query, params = _build_admin_risks_query(
+    where_sql, params = _build_admin_risks_where(
         status_filter=status_filter,
         severity_filter=severity_filter,
         assignee_filter=assignee_filter,
@@ -1478,8 +1599,13 @@ def admin_dashboard():
         current_user=current_user,
     )
 
+    list_query = f"SELECT * FROM risks{where_sql} ORDER BY updated_at DESC LIMIT ? OFFSET ?"
+
     with get_db_connection() as conn:
-        risks = conn.execute(query, params).fetchall()
+        total = int(conn.execute(f"SELECT COUNT(*) FROM risks{where_sql}", params).fetchone()[0])
+        pager = _pager(total=total, page=page, per_page=per_page)
+        offset = (int(pager["page"]) - 1) * per_page
+        risks = conn.execute(list_query, params + [per_page, offset]).fetchall()
         statuses = [
             row["status"]
             for row in conn.execute(
@@ -1500,7 +1626,21 @@ def admin_dashboard():
         ]
         kpis = conn.execute("SELECT * FROM kpis ORDER BY id ASC").fetchall()
         kpi_potential, kpi_chosen = _split_kpis(kpis)
-        computed_kpis = _compute_kpi_metrics(risks)
+        kpi_rows = conn.execute(
+            f"""
+            SELECT
+                status,
+                likelihood_initial,
+                impact_initial,
+                likelihood_residual,
+                impact_residual,
+                date_identified,
+                date_mitigated
+            FROM risks{where_sql}
+            """,
+            params,
+        ).fetchall()
+        computed_kpis = _compute_kpi_metrics(kpi_rows)
         for kpi in kpi_chosen:
             metric_key = _match_kpi_metric(kpi.get("name", ""))
             if metric_key and metric_key in computed_kpis:
@@ -1523,58 +1663,101 @@ def admin_dashboard():
             """
         ).fetchall()
 
-        first_updates = {
-            row["risk_id"]: row["first_update_at"]
-            for row in conn.execute(
-                """
-                SELECT risk_id, MIN(created_at) as first_update_at
-                FROM risk_events
-                WHERE event_type = 'update'
-                GROUP BY risk_id
-                """
-            ).fetchall()
-        }
+        touch_rows = conn.execute(
+            f"""
+            SELECT r.created_at as created_at, MIN(e.created_at) as first_update_at
+            FROM risks r
+            LEFT JOIN risk_events e
+                ON e.risk_id = r.id
+               AND e.event_type = 'update'
+            {where_sql}
+            GROUP BY r.id
+            """,
+            params,
+        ).fetchall()
+
+        closed_rows = conn.execute(
+            f"""
+            SELECT created_at, closed_at
+            FROM risks
+            {_where_join(where_sql, "TRIM(COALESCE(closed_at, '')) <> ''")}
+            """,
+            params,
+        ).fetchall()
 
     open_statuses = {"new", "in review", "in progress", "postponed"}
-    open_count = sum(1 for r in risks if (r["status"] or "").strip().lower() in open_statuses)
-    unassigned_count = sum(1 for r in risks if not (r["assigned_to"] or "").strip())
-    high_count = sum(
-        1
-        for r in risks
-        if (r["severity"] or "").strip().lower() in {"high", "critical"}
-        and (r["status"] or "").strip().lower() in open_statuses
-    )
-    my_count = (
-        sum(
-            1
-            for r in risks
-            if current_user
-            and (r["assigned_to"] or "").strip().lower() == str(current_user).strip().lower()
-            and (r["status"] or "").strip().lower() in open_statuses
+    open_status_placeholders = ",".join(["?"] * len(open_statuses))
+    open_params = sorted(open_statuses)
+
+    with get_db_connection() as conn:
+        unassigned_where = _where_join(where_sql, "TRIM(COALESCE(assigned_to, '')) = ''")
+        open_count = int(
+            conn.execute(
+                f"SELECT COUNT(*) FROM risks{_where_join(where_sql, f'LOWER(TRIM(status)) IN ({open_status_placeholders})')}",
+                params + open_params,
+            ).fetchone()[0]
         )
-        if current_user
-        else 0
-    )
+        unassigned_count = int(
+            conn.execute(
+                f"SELECT COUNT(*) FROM risks{unassigned_where}",
+                params,
+            ).fetchone()[0]
+        )
+        high_count = int(
+            conn.execute(
+                f"""
+                SELECT COUNT(*)
+                FROM risks
+                {_where_join(
+                    where_sql,
+                    f"LOWER(TRIM(COALESCE(severity,''))) IN ('high','critical') AND LOWER(TRIM(status)) IN ({open_status_placeholders})",
+                )}
+                """.strip(),
+                params + open_params,
+            ).fetchone()[0]
+        )
+        my_count = 0
+        if current_user:
+            my_count = int(
+                conn.execute(
+                    f"""
+                    SELECT COUNT(*)
+                    FROM risks
+                    {_where_join(where_sql, f"LOWER(TRIM(COALESCE(assigned_to,''))) = ? AND LOWER(TRIM(status)) IN ({open_status_placeholders})")}
+                    """.strip(),
+                    params + [current_user.strip().lower()] + open_params,
+                ).fetchone()[0]
+            )
 
     # SLA-style metrics
     first_touch_hours: list[float] = []
-    for r in risks:
-        created = _parse_date(r["created_at"])
-        touched = _parse_date(first_updates.get(r["id"]))
+    for row in touch_rows:
+        created = _parse_date(row["created_at"])
+        touched = _parse_date(row["first_update_at"])
         if created and touched and touched >= created:
             first_touch_hours.append((touched - created).total_seconds() / 3600.0)
 
     closed_days: list[float] = []
-    for r in risks:
-        if not (r["closed_at"] or "").strip():
-            continue
-        created = _parse_date(r["created_at"])
-        closed = _parse_date(r["closed_at"])
+    for row in closed_rows:
+        created = _parse_date(row["created_at"])
+        closed = _parse_date(row["closed_at"])
         if created and closed and closed >= created:
             closed_days.append((closed - created).total_seconds() / (3600.0 * 24.0))
 
     median_first_touch = _median(first_touch_hours)
     median_close_days = _median(closed_days)
+
+    query_args = {
+        "status": status_filter,
+        "severity": severity_filter,
+        "assigned": assignee_filter,
+        "q": query_text,
+        "per_page": int(pager["per_page"]),
+    }
+    if pager.get("has_prev"):
+        pager["prev_url"] = url_for("admin_dashboard", **query_args, page=int(pager["page"]) - 1)
+    if pager.get("has_next"):
+        pager["next_url"] = url_for("admin_dashboard", **query_args, page=int(pager["page"]) + 1)
 
     return render_template(
         "admin_dashboard.html",
@@ -1590,6 +1773,8 @@ def admin_dashboard():
         severity_filter=severity_filter,
         assignee_filter=assignee_filter,
         query_text=query_text,
+        pagination=pager,
+        query_args=query_args,
         queue_cards={
             "Open": open_count,
             "High/Critical": high_count,

@@ -3,6 +3,13 @@
 {% block content %}
 <section class="card">
     <h2>Risk Register</h2>
+    <div class="badge-legend" aria-label="Legend">
+        <span class="badge status">Status</span>
+        <span class="badge severity low">Low</span>
+        <span class="badge severity medium">Medium</span>
+        <span class="badge severity high">High</span>
+        <span class="badge severity critical">Critical</span>
+    </div>
     <div class="summary-grid">
         {% for item in summary %}
             <div class="summary-card">
@@ -71,14 +78,14 @@
         </div>
         {% for risk in risks %}
             <a class="table-row risk-list" href="{{ url_for('risk_detail', risk_id=risk['id']) }}">
-                <div class="title">{{ risk['title'] }}</div>
+                <div class="title" title="{{ risk['title'] }}">{{ risk['title'] }}</div>
                 <div>
                     <span class="badge severity {{ (risk['severity'] or 'unspecified')|lower }}">{{ risk['severity'] or 'Unspecified' }}</span>
                 </div>
                 <div>
                     <span class="badge status">{{ risk['status'] }}</span>
                 </div>
-                <div>{{ risk['owner'] or 'Unassigned' }}</div>
+                <div title="{{ risk['owner'] or '' }}">{{ risk['owner'] or 'Unassigned' }}</div>
                 <div>{{ risk['priority'] or '—' }}</div>
                 <div>
                     <progress class="progress" value="{{ risk['progress'] or 0 }}" max="100"></progress>
@@ -90,6 +97,20 @@
         {% else %}
             <div class="empty">No risks found.</div>
         {% endfor %}
+    </div>
+
+    <div class="pager" aria-label="Pagination">
+        <div class="pager-left">
+            <span class="muted">Showing page {{ pagination.page }} of {{ pagination.pages }} ({{ pagination.total }} total)</span>
+        </div>
+        <div class="pager-right">
+            {% if pagination.has_prev %}
+                <a class="button secondary" href="{{ pagination.prev_url }}">Previous</a>
+            {% endif %}
+            {% if pagination.has_next %}
+                <a class="button secondary" href="{{ pagination.next_url }}">Next</a>
+            {% endif %}
+        </div>
     </div>
 </section>
 {% endblock %}
