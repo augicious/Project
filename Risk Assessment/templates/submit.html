@@ -5,15 +5,15 @@
     <h2>Submit a Risk Assessment</h2>
     <form method="post" class="form">
         <label>
-            Title
+            <span class="field-label" tabindex="0" data-tooltip="Short summary of the risk.">Title</span>
             <input type="text" name="title" required />
         </label>
         <label>
-            Description
+            <span class="field-label" tabindex="0" data-tooltip="Describe what could happen, why it matters, and any key context.">Description</span>
             <textarea name="description" rows="5" required></textarea>
         </label>
         <label>
-            Severity
+            <span class="field-label" tabindex="0" data-tooltip="Overall urgency/impact: Low, Medium, High, or Critical. Admins can adjust later.">Severity</span>
             <select name="severity" required>
                 {% for option in ['Low', 'Medium', 'High', 'Critical'] %}
                     <option value="{{ option }}" {% if option == 'Medium' %}selected{% endif %}>{{ option }}</option>
@@ -23,7 +23,7 @@
         </label>
         <div class="form-grid">
             <label>
-                Initial Likelihood
+                <span class="field-label" tabindex="0" data-tooltip="How likely this risk is BEFORE any mitigation.">Initial Likelihood</span>
                 <select name="likelihood_initial">
                     <option value="">Select</option>
                     {% for option in ['Very Low', 'Low', 'Medium', 'High', 'Very High'] %}
@@ -32,7 +32,7 @@
                 </select>
             </label>
             <label>
-                Initial Impact
+                <span class="field-label" tabindex="0" data-tooltip="How severe the impact would be BEFORE any mitigation.">Initial Impact</span>
                 <select name="impact_initial">
                     <option value="">Select</option>
                     {% for option in ['Very Low', 'Low', 'Medium', 'High', 'Very High'] %}
@@ -41,7 +41,7 @@
                 </select>
             </label>
             <label>
-                Residual Likelihood
+                <span class="field-label" tabindex="0" data-tooltip="Expected likelihood AFTER mitigation steps are in place.">Residual Likelihood</span>
                 <select name="likelihood_residual">
                     <option value="">Select</option>
                     {% for option in ['Very Low', 'Low', 'Medium', 'High', 'Very High'] %}
@@ -50,7 +50,7 @@
                 </select>
             </label>
             <label>
-                Residual Impact
+                <span class="field-label" tabindex="0" data-tooltip="Expected impact AFTER mitigation steps are in place.">Residual Impact</span>
                 <select name="impact_residual">
                     <option value="">Select</option>
                     {% for option in ['Very Low', 'Low', 'Medium', 'High', 'Very High'] %}
@@ -59,15 +59,15 @@
                 </select>
             </label>
             <label>
-                Impact Type
-                <input type="text" name="impact_type" placeholder="Service unavailable, Endangerment, etc" />
+                <span class="field-label" tabindex="0" data-tooltip="Examples: Service unavailable; Safety/endangerment; Compliance; Financial; Reputational; Data loss.">Impact Type</span>
+                <input type="text" name="impact_type" />
             </label>
             <label>
-                Suggested Owner
+                <span class="field-label" tabindex="0" data-tooltip="Optional: team/person who should own the risk (can be updated later).">Suggested Owner</span>
                 <input type="text" name="owner" />
             </label>
             <label>
-                Priority (1-5)
+                <span class="field-label" tabindex="0" data-tooltip="Optional: relative priority, 1 (lowest) to 5 (highest)."><span>Priority (1-5)</span></span>
                 <input type="number" name="priority" min="1" max="5" />
             </label>
         </div>

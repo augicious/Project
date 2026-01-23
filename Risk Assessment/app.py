@@ -910,7 +910,7 @@ def _compute_kpi_metrics(risks: list[sqlite3.Row]) -> dict[str, dict[str, str]]:
         metrics["risk mitigation effectiveness"] = {
             "value": f"{avg_reduction * 100:.0f}%",
             "notes": (
-                f"Average reduction in risk score (likelihoodÃ—impact) across {scored_count} risks; "
+                f"Average reduction in risk score (likelihood×impact) across {scored_count} risks; "
                 f"{improved_count} improved. Avg score change: {avg_delta:.1f}."
             ),
         }
@@ -963,7 +963,7 @@ def _compute_kpi_metrics(risks: list[sqlite3.Row]) -> dict[str, dict[str, str]]:
             }
         else:
             metrics["risk response timeliness"] = {
-                "value": "â€”",
+                "value": "—",
                 "notes": "No usable dates found (date_identified/date_mitigated).",
             }
 
@@ -1050,6 +1050,68 @@ def _build_admin_risks_where(
         filters.append("(LOWER(title) LIKE ? OR LOWER(description) LIKE ?)")
         like = f"%{query_text.lower()}%"
         params.extend([like, like])
+
+    if filters:
+        return " WHERE " + " AND ".join(filters), params
+    return "", params
+
+
+def _build_admin_export_where(
+    *,
+    status_filter: str,
+    severity_filter: str,
+    assignee_filter: str,
+    owner_filter: str,
+    query_text: str,
+    current_user: str,
+    date_field: str,
+    date_from: str,
+    date_to: str,
+) -> tuple[str, list[str]]:
+    filters: list[str] = []
+    params: list[str] = []
+
+    # Reuse the same semantics as the admin dashboard filters.
+    if status_filter != "all":
+        filters.append("LOWER(TRIM(status)) = ?")
+        params.append(status_filter.lower())
+    if severity_filter != "all":
+        filters.append("LOWER(TRIM(COALESCE(severity, ''))) = ?")
+        params.append(severity_filter.lower())
+
+    if assignee_filter == "me" and current_user:
+        filters.append("LOWER(TRIM(COALESCE(assigned_to, ''))) = ?")
+        params.append(current_user.strip().lower())
+    elif assignee_filter == "unassigned":
+        filters.append("TRIM(COALESCE(assigned_to, '')) = ''")
+    elif assignee_filter != "all":
+        filters.append("LOWER(TRIM(COALESCE(assigned_to, ''))) = ?")
+        params.append(assignee_filter.lower())
+
+    if owner_filter != "all":
+        filters.append("LOWER(TRIM(COALESCE(owner, ''))) = ?")
+        params.append(owner_filter.lower())
+
+    if query_text:
+        filters.append("(LOWER(title) LIKE ? OR LOWER(description) LIKE ?)")
+        like = f"%{query_text.lower()}%"
+        params.extend([like, like])
+
+    allowed_date_fields = {
+        "created_at": "created_at",
+        "updated_at": "updated_at",
+        "closed_at": "closed_at",
+        "date_identified": "date_identified",
+    }
+    safe_date_col = allowed_date_fields.get((date_field or "").strip(), "created_at")
+
+    # NOTE: Dates in this app are stored as text; DATE() works for ISO-like strings.
+    if date_from:
+        filters.append(f"DATE({safe_date_col}) >= DATE(?)")
+        params.append(date_from)
+    if date_to:
+        filters.append(f"DATE({safe_date_col}) <= DATE(?)")
+        params.append(date_to)
 
     if filters:
         return " WHERE " + " AND ".join(filters), params
@@ -1178,6 +1240,259 @@ def _split_kpis(kpis: list[sqlite3.Row]) -> tuple[list[dict], list[dict]]:
     return potential, chosen
 
 
+def _format_int(value: int) -> str:
+    return f"{int(value):,}"
+
+
+def _format_percent(numerator: int, denominator: int) -> str:
+    if denominator <= 0:
+        return "0%"
+    return f"{(numerator / denominator) * 100.0:.0f}%"
+
+
+def _compute_program_kpis(
+    conn: sqlite3.Connection,
+    *,
+    where_sql: str,
+    params: list[str],
+) -> list[dict[str, str]]:
+    """Compute always-valid KPIs directly from the DB.
+
+    These are intended to be stable operational metrics for the Risk Ticketing app,
+    not spreadsheet formulas.
+    """
+
+    completed_statuses = ["mitigated", "archived", "closed"]
+    completed_placeholders = ",".join(["?"] * len(completed_statuses))
+    open_condition = f"LOWER(TRIM(COALESCE(status, ''))) NOT IN ({completed_placeholders})"
+    completed_condition = f"LOWER(TRIM(COALESCE(status, ''))) IN ({completed_placeholders})"
+
+    total = int(conn.execute(f"SELECT COUNT(*) FROM risks{where_sql}", params).fetchone()[0])
+    open_total = int(
+        conn.execute(
+            f"SELECT COUNT(*) FROM risks{_where_join(where_sql, open_condition)}",
+            params + completed_statuses,
+        ).fetchone()[0]
+    )
+    completed_total = int(
+        conn.execute(
+            f"SELECT COUNT(*) FROM risks{_where_join(where_sql, completed_condition)}",
+            params + completed_statuses,
+        ).fetchone()[0]
+    )
+    high_critical_open = int(
+        conn.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM risks
+            {_where_join(where_sql, f"LOWER(TRIM(COALESCE(severity,''))) IN ('high','critical') AND {open_condition}")}
+            """.strip(),
+            params + completed_statuses,
+        ).fetchone()[0]
+    )
+    unassigned_open = int(
+        conn.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM risks
+            {_where_join(where_sql, f"TRIM(COALESCE(assigned_to, '')) = '' AND {open_condition}")}
+            """.strip(),
+            params + completed_statuses,
+        ).fetchone()[0]
+    )
+
+    # Median first-touch hours (from risk_events). We treat the first 'update' event as first-touch.
+    touch_rows = conn.execute(
+        f"""
+        SELECT r.id as id,
+               r.status as status,
+               r.created_at as created_at,
+               MIN(e.created_at) as first_update_at
+        FROM risks r
+        LEFT JOIN risk_events e
+            ON e.risk_id = r.id
+           AND e.event_type = 'update'
+        {where_sql}
+        GROUP BY r.id
+        """.strip(),
+        params,
+    ).fetchall()
+
+    first_touch_hours: list[float] = []
+    first_touch_breaches_24h = 0
+    open_seen = 0
+    for row in touch_rows:
+        created = _parse_date(row["created_at"])
+        touched = _parse_date(row["first_update_at"])
+        status_lower = str(row["status"] or "").strip().lower()
+        is_open = status_lower not in set(completed_statuses)
+        if is_open:
+            open_seen += 1
+        if created and touched and touched >= created:
+            delta_hours = (touched - created).total_seconds() / 3600.0
+            first_touch_hours.append(delta_hours)
+            if is_open and delta_hours > 24.0:
+                first_touch_breaches_24h += 1
+
+    median_first_touch = _median(first_touch_hours)
+
+    # Assignment SLAs (from risk_events field='assigned_to').
+    assign_rows = conn.execute(
+        f"""
+        SELECT r.id as id,
+               r.created_at as created_at,
+               MIN(e.created_at) as assigned_at
+        FROM risks r
+        LEFT JOIN risk_events e
+            ON e.risk_id = r.id
+           AND e.event_type = 'update'
+           AND e.field = 'assigned_to'
+           AND TRIM(COALESCE(e.new_value, '')) <> ''
+        {where_sql}
+        GROUP BY r.id
+        """.strip(),
+        params,
+    ).fetchall()
+
+    assign_hours: list[float] = []
+    assigned_within_24h = 0
+    assigned_count = 0
+    for row in assign_rows:
+        created = _parse_date(row["created_at"])
+        assigned_at = _parse_date(row["assigned_at"])
+        if created and assigned_at and assigned_at >= created:
+            assigned_count += 1
+            delta_hours = (assigned_at - created).total_seconds() / 3600.0
+            assign_hours.append(delta_hours)
+            if delta_hours <= 24.0:
+                assigned_within_24h += 1
+
+    median_assign = _median(assign_hours)
+
+    # Aging + review hygiene (computed for open risks).
+    open_over_30d = int(
+        conn.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM risks
+            {_where_join(where_sql, f"{open_condition} AND (julianday('now') - julianday(replace(created_at, 'T', ' '))) > 30")}
+            """.strip(),
+            params + completed_statuses,
+        ).fetchone()[0]
+    )
+
+    open_review_rows = conn.execute(
+        f"""
+        SELECT created_at, next_review, assigned_to
+        FROM risks
+        {_where_join(where_sql, open_condition)}
+        """.strip(),
+        params + completed_statuses,
+    ).fetchall()
+
+    now = datetime.utcnow()
+    overdue_reviews = 0
+    unassigned_breaches_24h = 0
+    for row in open_review_rows:
+        created = _parse_date(row["created_at"])
+        if created and (now - created).total_seconds() > 24.0 * 3600.0:
+            if not str(row["assigned_to"] or "").strip():
+                unassigned_breaches_24h += 1
+
+        next_review = _parse_date(row["next_review"])
+        if next_review and next_review.date() < now.date():
+            overdue_reviews += 1
+
+    # Median time-to-done days (Closed preferred, else Date Mitigated).
+    done_rows = conn.execute(
+        f"""
+        SELECT created_at,
+               COALESCE(NULLIF(TRIM(closed_at), ''), NULLIF(TRIM(date_mitigated), '')) as done_at
+        FROM risks
+        {_where_join(where_sql, completed_condition)}
+        """.strip(),
+        params + completed_statuses,
+    ).fetchall()
+
+    done_days: list[float] = []
+    for row in done_rows:
+        created = _parse_date(row["created_at"])
+        done_at = _parse_date(row["done_at"])
+        if created and done_at and done_at >= created:
+            done_days.append((done_at - created).total_seconds() / (3600.0 * 24.0))
+    median_done_days = _median(done_days)
+
+    cards: list[dict[str, str]] = [
+        {
+            "name": "Total risks",
+            "value": _format_int(total),
+            "notes": "All risks in the current view.",
+        },
+        {
+            "name": "Open risks",
+            "value": _format_int(open_total),
+            "notes": "Not Mitigated/Archived/Closed.",
+        },
+        {
+            "name": "Open > 30 days",
+            "value": _format_int(open_over_30d),
+            "notes": "Open risks older than 30 days (based on created_at).",
+        },
+        {
+            "name": "Completed rate",
+            "value": _format_percent(completed_total, max(1, total)),
+            "notes": "Percent Mitigated/Archived/Closed.",
+        },
+        {
+            "name": "High/Critical open",
+            "value": _format_int(high_critical_open),
+            "notes": "High/critical severity that are still open.",
+        },
+        {
+            "name": "Unassigned open",
+            "value": _format_int(unassigned_open),
+            "notes": "Open risks missing an assignee.",
+        },
+        {
+            "name": "Overdue reviews",
+            "value": _format_int(overdue_reviews),
+            "notes": "Open risks where Next Review is before today.",
+        },
+        {
+            "name": "Median first touch",
+            "value": (f"{median_first_touch:.1f}h" if median_first_touch is not None else "—"),
+            "notes": "Median time from create → first update event.",
+        },
+        {
+            "name": "First-touch breaches",
+            "value": _format_int(first_touch_breaches_24h),
+            "notes": "Open risks with first touch > 24h.",
+        },
+        {
+            "name": "Median time to assign",
+            "value": (f"{median_assign:.1f}h" if median_assign is not None else "—"),
+            "notes": "Median time from create → first assignee set.",
+        },
+        {
+            "name": "Assigned within 24h",
+            "value": _format_percent(assigned_within_24h, max(1, assigned_count)),
+            "notes": "Percent of assigned risks whose first assignment happened within 24h.",
+        },
+        {
+            "name": "Unassigned breaches",
+            "value": _format_int(unassigned_breaches_24h),
+            "notes": "Open risks unassigned for > 24h.",
+        },
+        {
+            "name": "Median time to done",
+            "value": (f"{median_done_days:.1f}d" if median_done_days is not None else "—"),
+            "notes": "Median create → closed/mitigated.",
+        },
+    ]
+
+    return cards
+
+
 @app.before_request
 def setup() -> None:
     if not app.config["DB_INITIALIZED"]:
@@ -1247,29 +1562,7 @@ def index():
                 "SELECT DISTINCT TRIM(source_sheet) as source_sheet FROM risks WHERE source_sheet IS NOT NULL AND TRIM(source_sheet) <> ''"
             )
         ]
-        kpis = conn.execute("SELECT * FROM kpis ORDER BY id ASC").fetchall()
-        kpi_potential, kpi_chosen = _split_kpis(kpis)
-        kpi_rows = conn.execute(
-            f"""
-            SELECT
-                status,
-                likelihood_initial,
-                impact_initial,
-                likelihood_residual,
-                impact_residual,
-                date_identified,
-                date_mitigated
-            FROM risks{where_sql}
-            """,
-            params,
-        ).fetchall()
-        computed_kpis = _compute_kpi_metrics(kpi_rows)
-        for kpi in kpi_chosen:
-            metric_key = _match_kpi_metric(kpi.get("name", ""))
-            if metric_key and metric_key in computed_kpis:
-                kpi["value"] = computed_kpis[metric_key]["value"]
-                kpi["notes"] = computed_kpis[metric_key]["notes"]
-                kpi["is_formula"] = False
+        program_kpis = _compute_program_kpis(conn, where_sql=where_sql, params=params)
         summary = conn.execute(
             """
             SELECT status, COUNT(*) as count
@@ -1295,7 +1588,7 @@ def index():
         statuses=sorted(set(statuses)),
         owners=sorted(set(owners)),
         sheets=sorted(set(sheets)),
-        kpi_chosen=kpi_chosen,
+        kpi_cards=program_kpis,
         summary=summary,
         status_filter=status_filter,
         owner_filter=owner_filter,
@@ -1624,29 +1917,7 @@ def admin_dashboard():
                 "SELECT DISTINCT TRIM(assigned_to) as assigned_to FROM risks WHERE assigned_to IS NOT NULL AND TRIM(assigned_to) <> ''"
             )
         ]
-        kpis = conn.execute("SELECT * FROM kpis ORDER BY id ASC").fetchall()
-        kpi_potential, kpi_chosen = _split_kpis(kpis)
-        kpi_rows = conn.execute(
-            f"""
-            SELECT
-                status,
-                likelihood_initial,
-                impact_initial,
-                likelihood_residual,
-                impact_residual,
-                date_identified,
-                date_mitigated
-            FROM risks{where_sql}
-            """,
-            params,
-        ).fetchall()
-        computed_kpis = _compute_kpi_metrics(kpi_rows)
-        for kpi in kpi_chosen:
-            metric_key = _match_kpi_metric(kpi.get("name", ""))
-            if metric_key and metric_key in computed_kpis:
-                kpi["value"] = computed_kpis[metric_key]["value"]
-                kpi["notes"] = computed_kpis[metric_key]["notes"]
-                kpi["is_formula"] = False
+        program_kpis = _compute_program_kpis(conn, where_sql=where_sql, params=params)
         summary = conn.execute(
             """
             SELECT status, COUNT(*) as count
@@ -1762,8 +2033,7 @@ def admin_dashboard():
     return render_template(
         "admin_dashboard.html",
         risks=risks,
-        kpi_potential=kpi_potential,
-        kpi_chosen=kpi_chosen,
+        kpi_cards=program_kpis,
         summary=summary,
         severity_summary=severity_summary,
         statuses=sorted(set(statuses)),
@@ -1959,16 +2229,25 @@ def admin_export_csv():
     status_filter = request.args.get("status", "all").strip()
     severity_filter = request.args.get("severity", "all").strip()
     assignee_filter = request.args.get("assigned", "all").strip()
+    owner_filter = request.args.get("owner", "all").strip()
     query_text = request.args.get("q", "").strip()
+    date_field = request.args.get("date_field", "created_at").strip()
+    date_from = request.args.get("date_from", "").strip()
+    date_to = request.args.get("date_to", "").strip()
 
     current_user = str((session.get("user") or {}).get("preferred_username") or "").strip()
-    query, params = _build_admin_risks_query(
+    where_sql, params = _build_admin_export_where(
         status_filter=status_filter,
         severity_filter=severity_filter,
         assignee_filter=assignee_filter,
+        owner_filter=owner_filter,
         query_text=query_text,
         current_user=current_user,
+        date_field=date_field,
+        date_from=date_from,
+        date_to=date_to,
     )
+    query = f"SELECT * FROM risks{where_sql} ORDER BY updated_at DESC"
 
     with get_db_connection() as conn:
         risks = conn.execute(query, params).fetchall()
@@ -2017,6 +2296,86 @@ def admin_export_csv():
     response = app.response_class(csv_bytes, mimetype="text/csv; charset=utf-8")
     response.headers["Content-Disposition"] = "attachment; filename=risks_export.csv"
     return response
+
+
+@app.route("/admin/export")
+def admin_export():
+    if not require_admin():
+        return redirect(url_for("admin"))
+
+    status_filter = request.args.get("status", "all").strip()
+    severity_filter = request.args.get("severity", "all").strip()
+    assignee_filter = request.args.get("assigned", "all").strip()
+    owner_filter = request.args.get("owner", "all").strip()
+    query_text = request.args.get("q", "").strip()
+    date_field = request.args.get("date_field", "created_at").strip()
+    date_from = request.args.get("date_from", "").strip()
+    date_to = request.args.get("date_to", "").strip()
+
+    current_user = str((session.get("user") or {}).get("preferred_username") or "").strip()
+    where_sql, where_params = _build_admin_export_where(
+        status_filter=status_filter,
+        severity_filter=severity_filter,
+        assignee_filter=assignee_filter,
+        owner_filter=owner_filter,
+        query_text=query_text,
+        current_user=current_user,
+        date_field=date_field,
+        date_from=date_from,
+        date_to=date_to,
+    )
+
+    with get_db_connection() as conn:
+        match_count = int(conn.execute(f"SELECT COUNT(*) FROM risks{where_sql}", where_params).fetchone()[0])
+        statuses = [
+            row["status"]
+            for row in conn.execute(
+                "SELECT DISTINCT TRIM(status) as status FROM risks WHERE status IS NOT NULL AND TRIM(status) <> ''"
+            )
+        ]
+        severities = [
+            row["severity"]
+            for row in conn.execute(
+                "SELECT DISTINCT TRIM(severity) as severity FROM risks WHERE severity IS NOT NULL AND TRIM(severity) <> ''"
+            )
+        ]
+        assignees = [
+            row["assigned_to"]
+            for row in conn.execute(
+                "SELECT DISTINCT TRIM(assigned_to) as assigned_to FROM risks WHERE assigned_to IS NOT NULL AND TRIM(assigned_to) <> ''"
+            )
+        ]
+        owners = [
+            row["owner"]
+            for row in conn.execute(
+                "SELECT DISTINCT TRIM(owner) as owner FROM risks WHERE owner IS NOT NULL AND TRIM(owner) <> ''"
+            )
+        ]
+
+    date_fields = [
+        ("created_at", "Created"),
+        ("updated_at", "Last Updated"),
+        ("closed_at", "Closed"),
+        ("date_identified", "Date Identified"),
+    ]
+
+    return render_template(
+        "admin_export.html",
+        match_count=match_count,
+        statuses=sorted(set(statuses)),
+        severities=sorted(set(severities)),
+        assignees=sorted(set(assignees)),
+        owners=sorted(set(owners)),
+        date_fields=date_fields,
+        status_filter=status_filter,
+        severity_filter=severity_filter,
+        assignee_filter=assignee_filter,
+        owner_filter=owner_filter,
+        query_text=query_text,
+        date_field=date_field,
+        date_from=date_from,
+        date_to=date_to,
+    )
 
 
 @app.route("/admin/import", methods=["POST"])

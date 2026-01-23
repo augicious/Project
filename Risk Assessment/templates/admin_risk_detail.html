@@ -7,10 +7,13 @@
             <h2>{{ risk['title'] }}</h2>
             <p class="subtitle">Manage risk lifecycle and mitigation.</p>
         </div>
-        <a class="button" href="{{ url_for('admin_dashboard') }}">Back to dashboard</a>
+        <div class="button-row">
+            <a class="button secondary" href="{{ url_for('admin_dashboard') }}">Back to dashboard</a>
+            <button type="submit" form="admin-risk-form">Save</button>
+        </div>
     </div>
 
-    <form method="post" class="form">
+    <form method="post" class="form" id="admin-risk-form">
         <div class="form-grid">
             <label>
                 Severity
@@ -22,32 +25,33 @@
             </label>
             <label>
                 Assigned To
-                <input type="text" name="assigned_to" value="{{ risk['assigned_to'] or '' }}" placeholder="name@hdh.org" />
+                <input type="text" name="assigned_to" value="{{ risk['assigned_to'] or '' }}" placeholder="name@hdh.org" inputmode="email" autocomplete="email" />
             </label>
         </div>
         <label>
             Status
-            <select name="status">
+            <select name="status" id="admin-status">
                 {% for option in ['New', 'In Review', 'In Progress', 'Postponed', 'Mitigated', 'Archived', 'Closed'] %}
                     <option value="{{ option }}" {% if risk['status'] == option %}selected{% endif %}>{{ option }}</option>
                 {% endfor %}
             </select>
         </label>
         <label>
-            Close Reason (required for Closed)
-            <input type="text" name="close_reason" value="{{ risk['close_reason'] or '' }}" placeholder="Resolved, accepted, duplicate, etc" />
+            Close Reason
+            <input type="text" id="admin-close-reason" name="close_reason" value="{{ risk['close_reason'] or '' }}" placeholder="Resolved, accepted, duplicate, etc" aria-describedby="admin-close-reason-help" />
+            <small class="help" id="admin-close-reason-help" hidden>Required when Status is Closed.</small>
         </label>
         <label>
             Owner
-            <input type="text" name="owner" value="{{ risk['owner'] }}" />
+            <input type="text" name="owner" value="{{ risk['owner'] }}" autocomplete="organization" />
         </label>
         <label>
             Priority (1-5)
-            <input type="number" name="priority" min="1" max="5" value="{{ risk['priority'] }}" />
+            <input type="number" name="priority" min="1" max="5" step="1" value="{{ risk['priority'] }}" />
         </label>
         <label>
             Date Identified
-            <input type="text" name="date_identified" value="{{ risk['date_identified'] }}" />
+            <input type="date" name="date_identified" value="{{ (risk['date_identified'] or '')[:10] }}" />
         </label>
         <label>
             Impact Type
@@ -95,15 +99,15 @@
         </label>
         <label>
             Date Last Reviewed
-            <input type="text" name="date_last_reviewed" value="{{ risk['date_last_reviewed'] }}" />
+            <input type="date" name="date_last_reviewed" value="{{ (risk['date_last_reviewed'] or '')[:10] }}" />
         </label>
         <label>
             Next Review
-            <input type="text" name="next_review" value="{{ risk['next_review'] }}" />
+            <input type="date" name="next_review" value="{{ (risk['next_review'] or '')[:10] }}" />
         </label>
         <label>
             Date Postponed
-            <input type="text" name="date_postponed" value="{{ risk['date_postponed'] }}" />
+            <input type="date" name="date_postponed" value="{{ (risk['date_postponed'] or '')[:10] }}" />
         </label>
         <label>
             Reason Postponed
@@ -111,7 +115,7 @@
         </label>
         <label>
             Date Mitigated
-            <input type="text" name="date_mitigated" value="{{ risk['date_mitigated'] }}" />
+            <input type="date" name="date_mitigated" value="{{ (risk['date_mitigated'] or '')[:10] }}" />
         </label>
         <label>
             Mitigation History
@@ -127,7 +131,7 @@
         </label>
         <label>
             Progress (%)
-            <input type="number" name="progress" min="0" max="100" value="{{ risk['progress'] }}" />
+            <input type="number" name="progress" min="0" max="100" step="1" value="{{ risk['progress'] }}" />
         </label>
         <button type="submit">Save Updates</button>
     </form>
@@ -197,6 +201,58 @@
 
     <div class="detail-grid">
         <div>
+
+        <script>
+            (function () {
+                const formEl = document.getElementById('admin-risk-form');
+                const statusEl = document.getElementById('admin-status');
+                const closeReasonEl = document.getElementById('admin-close-reason');
+                const helpEl = document.getElementById('admin-close-reason-help');
+
+                if (!statusEl || !closeReasonEl) {
+                    return;
+                }
+
+                function markCloseReasonInvalid(isInvalid) {
+                    closeReasonEl.setAttribute('aria-invalid', isInvalid ? 'true' : 'false');
+                }
+
+                function updateCloseReasonRule() {
+                    const isClosed = (statusEl.value || '').trim() === 'Closed';
+                    closeReasonEl.required = isClosed;
+                    closeReasonEl.setAttribute('aria-required', isClosed ? 'true' : 'false');
+                    if (helpEl) {
+                        helpEl.hidden = !isClosed;
+                    }
+                    if (!isClosed) {
+                        markCloseReasonInvalid(false);
+                    }
+                }
+
+                function validateCloseReason() {
+                    const isClosed = (statusEl.value || '').trim() === 'Closed';
+                    const value = (closeReasonEl.value || '').trim();
+                    const invalid = Boolean(isClosed && !value);
+                    markCloseReasonInvalid(invalid);
+                    return !invalid;
+                }
+
+                statusEl.addEventListener('change', updateCloseReasonRule);
+                closeReasonEl.addEventListener('blur', validateCloseReason);
+
+                if (formEl) {
+                    formEl.addEventListener('submit', function (e) {
+                        formEl.classList.add('was-validated');
+                        if (!validateCloseReason()) {
+                            e.preventDefault();
+                            closeReasonEl.focus();
+                        }
+                    });
+                }
+
+                updateCloseReasonRule();
+            })();
+        </script>
             <h3>Description</h3>
             <p>{{ risk['description'] }}</p>
         </div>

@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="card">
+    <div class="detail-header">
+        <div>
+            <h2>Export Risks</h2>
+            <p class="subtitle">Download a customized CSV export.</p>
+            <p class="subtitle"><strong>{{ match_count }}</strong> risk(s) match these filters.</p>
+        </div>
+        <div class="button-row">
+            <a class="button secondary" href="{{ url_for('admin_dashboard') }}">Back to dashboard</a>
+            <a class="button" href="{{ url_for('admin_export_csv', status=status_filter, severity=severity_filter, assigned=assignee_filter, owner=owner_filter, q=query_text, date_field=date_field, date_from=date_from, date_to=date_to) }}">Download CSV</a>
+        </div>
+    </div>
+
+    <form method="get" class="form" action="{{ url_for('admin_export') }}">
+        <div class="form-grid">
+            <label>
+                Status
+                <select name="status">
+                    <option value="all" {% if status_filter == 'all' %}selected{% endif %}>All</option>
+                    {% for s in statuses %}
+                        <option value="{{ s }}" {% if status_filter == s %}selected{% endif %}>{{ s }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label>
+                Severity
+                <select name="severity">
+                    <option value="all" {% if severity_filter == 'all' %}selected{% endif %}>All</option>
+                    {% for s in severities %}
+                        <option value="{{ s }}" {% if severity_filter == s %}selected{% endif %}>{{ s }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+        </div>
+
+        <div class="form-grid">
+            <label>
+                Assigned To
+                <select name="assigned">
+                    <option value="all" {% if assignee_filter == 'all' %}selected{% endif %}>All</option>
+                    <option value="me" {% if assignee_filter == 'me' %}selected{% endif %}>Me</option>
+                    <option value="unassigned" {% if assignee_filter == 'unassigned' %}selected{% endif %}>Unassigned</option>
+                    {% for a in assignees %}
+                        <option value="{{ a }}" {% if assignee_filter == a %}selected{% endif %}>{{ a }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label>
+                Owner
+                <select name="owner">
+                    <option value="all" {% if owner_filter == 'all' %}selected{% endif %}>All</option>
+                    {% for o in owners %}
+                        <option value="{{ o }}" {% if owner_filter == o %}selected{% endif %}>{{ o }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+        </div>
+
+        <label>
+            Search (title/description)
+            <input type="search" name="q" value="{{ query_text }}" placeholder="keyword" />
+        </label>
+
+        <div class="form-grid">
+            <label>
+                Date Field
+                <select name="date_field">
+                    {% for value, label in date_fields %}
+                        <option value="{{ value }}" {% if date_field == value %}selected{% endif %}>{{ label }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label>
+                From
+                <input type="date" name="date_from" value="{{ date_from }}" />
+            </label>
+        </div>
+
+        <div class="form-grid">
+            <label>
+                To
+                <input type="date" name="date_to" value="{{ date_to }}" />
+            </label>
+            <div>
+                <button type="submit">Apply Filters</button>
+            </div>
+        </div>
+
+        <div class="muted" style="margin-top: 8px;">
+            Tip: Use Created/Updated/Closed for best date filtering accuracy.
+        </div>
+    </form>
+</section>
+{% endblock %}

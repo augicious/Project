@@ -18,21 +18,22 @@
             </div>
         {% endfor %}
     </div>
-    {% if kpi_chosen %}
-        <div class="section-block">
-            <div class="section-title">
-                <h3>Key performance indicators</h3>
-                <p class="subtitle">Executive view of current risk performance.</p>
-            </div>
+    {% if kpi_cards %}
+        <details class="details">
+            <summary>Key performance indicators</summary>
+            <p class="subtitle">Executive view of current risk performance.</p>
             <div class="kpi-grid">
-                {% for kpi in kpi_chosen %}
+                {% for kpi in kpi_cards %}
                     <div class="kpi-card">
                         <span class="label">{{ kpi['name'] }}</span>
                         <strong>{{ kpi['value'] or '—' }}</strong>
+                        {% if kpi.get('notes') %}
+                            <small class="kpi-muted">{{ kpi['notes'] }}</small>
+                        {% endif %}
                     </div>
                 {% endfor %}
             </div>
-        </div>
+        </details>
     {% endif %}
     <form class="filters" method="get">
         <label>
