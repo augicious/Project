@@ -9,18 +9,33 @@
         </div>
         <div class="button-row">
             <form method="post" action="{{ url_for('admin_import') }}">
+                <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
                 <button type="submit">Import Risk Register</button>
             </form>
             <form method="post" action="{{ url_for('admin_archive_closed_attachments') }}">
+                <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
                 <input type="hidden" name="days" value="{{ config.get('ATTACHMENT_ARCHIVE_AFTER_DAYS', 180) }}" />
                 <button type="submit" class="button secondary" title="Moves attachments for Closed risks older than the cutoff into archive storage.">Archive old attachments</button>
             </form>
             <a class="button secondary" href="{{ url_for('admin_export', status=status_filter, severity=severity_filter, assigned=assignee_filter, q=query_text) }}">Exports</a>
-            <a class="button" href="{{ url_for('admin_logout') }}">Logout</a>
+            <a class="button" href="{{ url_for('logout') }}">Sign out</a>
         </div>
     </div>
 
     <div class="dashboard-grid">
+        <div class="section-block saved-views">
+            <div class="section-title">
+                <h3>Saved Views</h3>
+                <p class="subtitle">Save filter presets for quick access (stored in this browser).</p>
+            </div>
+            <div class="saved-views-controls">
+                <input type="text" id="sv-name" placeholder="Name this view (e.g., My queue)" />
+                <button type="button" class="button secondary" id="sv-save">Save current view</button>
+                <button type="button" class="button secondary" id="sv-clear" title="Remove all saved views">Clear</button>
+            </div>
+            <div class="saved-views-list" id="sv-list"></div>
+        </div>
+
         <div class="section-block">
             <div class="section-title">
                 <h3>Queue</h3>
@@ -113,6 +128,7 @@
 
 
     <form class="bulk-actions" method="post" action="{{ url_for('admin_bulk_update') }}">
+            <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
         <input type="hidden" name="return_to" value="{{ request.full_path }}" />
         <div class="bulk-row">
             <label>
@@ -135,7 +151,7 @@
             </label>
             <label>
                 Bulk Assignee
-                <input type="text" name="bulk_assigned_to" placeholder="name@hdh.org" />
+                <input type="text" name="bulk_assigned_to" placeholder="name@hdh.org" list="assignee-options" />
             </label>
             <label class="bulk-inline">
                 <span>Clear assignee</span>
@@ -150,6 +166,12 @@
                 <button type="submit" id="bulk-apply" disabled>Apply to selected</button>
             </div>
         </div>
+
+        <datalist id="assignee-options">
+            {% for a in assignees %}
+                <option value="{{ a }}"></option>
+            {% endfor %}
+        </datalist>
 
         <div class="table">
         <div class="table-row table-header admin-list">
@@ -213,26 +235,128 @@
     <script>
         (function () {
             const selectAll = document.getElementById('select-all');
-            if (!selectAll) return;
             const rows = Array.from(document.querySelectorAll('input.row-select'));
             const selectedCount = document.getElementById('selected-count');
             const bulkApply = document.getElementById('bulk-apply');
+
+            const storageKey = 'risk_admin_saved_views_v1';
+            const svName = document.getElementById('sv-name');
+            const svSave = document.getElementById('sv-save');
+            const svClear = document.getElementById('sv-clear');
+            const svList = document.getElementById('sv-list');
+
+            function currentViewPath() {
+                const url = new URL(window.location.href);
+                url.searchParams.delete('page');
+                const qs = url.searchParams.toString();
+                return url.pathname + (qs ? ('?' + qs) : '');
+            }
+
+            function loadViews() {
+                try {
+                    const raw = localStorage.getItem(storageKey);
+                    const data = raw ? JSON.parse(raw) : [];
+                    return Array.isArray(data) ? data : [];
+                } catch (e) {
+                    return [];
+                }
+            }
+
+            function saveViews(views) {
+                try {
+                    localStorage.setItem(storageKey, JSON.stringify(views));
+                } catch (e) {
+                    // ignore
+                }
+            }
+
+            function renderViews() {
+                if (!svList) return;
+                svList.innerHTML = '';
+                const views = loadViews();
+                if (!views.length) {
+                    const empty = document.createElement('div');
+                    empty.className = 'muted';
+                    empty.textContent = 'No saved views yet.';
+                    svList.appendChild(empty);
+                    return;
+                }
+
+                views.forEach((v, idx) => {
+                    const row = document.createElement('div');
+                    row.className = 'saved-view-row';
+
+                    const link = document.createElement('a');
+                    link.className = 'saved-view-link';
+                    link.href = v.path;
+                    link.textContent = v.name;
+
+                    const del = document.createElement('button');
+                    del.type = 'button';
+                    del.className = 'button secondary saved-view-delete';
+                    del.textContent = 'Remove';
+                    del.addEventListener('click', () => {
+                        const next = loadViews().filter((_, i) => i !== idx);
+                        saveViews(next);
+                        renderViews();
+                    });
+
+                    row.appendChild(link);
+                    row.appendChild(del);
+                    svList.appendChild(row);
+                });
+            }
 
             function updateState() {
                 const checked = rows.filter(cb => cb.checked).length;
                 if (selectedCount) selectedCount.textContent = String(checked);
                 if (bulkApply) bulkApply.disabled = checked === 0;
-                selectAll.checked = checked > 0 && checked === rows.length;
-                selectAll.indeterminate = checked > 0 && checked < rows.length;
+                if (selectAll) {
+                    selectAll.checked = checked > 0 && checked === rows.length;
+                    selectAll.indeterminate = checked > 0 && checked < rows.length;
+                }
             }
 
-            selectAll.addEventListener('change', function () {
-                rows.forEach(cb => { cb.checked = selectAll.checked; });
-                updateState();
-            });
+            if (selectAll) {
+                selectAll.addEventListener('change', function () {
+                    rows.forEach(cb => { cb.checked = selectAll.checked; });
+                    updateState();
+                });
+            }
 
             rows.forEach(cb => cb.addEventListener('change', updateState));
             updateState();
+
+            renderViews();
+
+            if (svSave && svName) {
+                svSave.addEventListener('click', () => {
+                    const name = (svName.value || '').trim();
+                    if (!name) {
+                        svName.focus();
+                        return;
+                    }
+                    const path = currentViewPath();
+                    const views = loadViews();
+                    const existingIndex = views.findIndex(v => v && v.name && v.name.toLowerCase() === name.toLowerCase());
+                    const entry = { name, path };
+                    if (existingIndex >= 0) {
+                        views[existingIndex] = entry;
+                    } else {
+                        views.unshift(entry);
+                    }
+                    saveViews(views.slice(0, 20));
+                    svName.value = '';
+                    renderViews();
+                });
+            }
+
+            if (svClear) {
+                svClear.addEventListener('click', () => {
+                    saveViews([]);
+                    renderViews();
+                });
+            }
         })();
     </script>
 </section>

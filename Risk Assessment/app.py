@@ -6,6 +6,7 @@ import csv
 import io
 import uuid
 import smtplib
+import secrets
 from datetime import datetime
 from functools import wraps
 from pathlib import Path
@@ -14,6 +15,7 @@ from email.message import EmailMessage
 
 from flask import Flask, abort, redirect, render_template, request, session, url_for, flash, send_file, send_from_directory # type: ignore
 from openpyxl import load_workbook
+import requests
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.utils import secure_filename
 
@@ -184,6 +186,20 @@ app.config["AUTH_REQUIRED"] = os.getenv("AUTH_REQUIRED", "true").lower() in {
     "on",
 }
 
+# Session hardening (safe defaults; override via env if needed)
+_debug_mode = os.getenv("FLASK_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = os.getenv("SESSION_COOKIE_SAMESITE", "Lax")
+app.config["SESSION_COOKIE_SECURE"] = _env_bool("SESSION_COOKIE_SECURE", not _debug_mode)
+
+# Admin authorization via Entra group membership
+app.config["ADMIN_ENTRA_GROUPS"] = os.getenv(
+    "ADMIN_ENTRA_GROUPS",
+    "Risk Management,IS-Administrator",
+)
+app.config["ADMIN_ENTRA_GROUP_IDS"] = os.getenv("ADMIN_ENTRA_GROUP_IDS", "").strip()
+app.config["ADMIN_ENTRA_GRAPH_LOOKUP"] = _env_bool("ADMIN_ENTRA_GRAPH_LOOKUP", True)
+
 
 def _oauth_enabled() -> bool:
     return (
@@ -193,6 +209,10 @@ def _oauth_enabled() -> bool:
         and bool(app.config.get("OIDC_CLIENT_SECRET"))
         and bool(app.config.get("OIDC_REDIRECT_URI"))
     )
+
+
+# Admin password login mode: keep for non-OIDC deployments, but default to disabled when OIDC is enabled.
+app.config["ADMIN_PASSWORD_ENABLED"] = _env_bool("ADMIN_PASSWORD_ENABLED", not _oauth_enabled())
 
 
 oauth = OAuth(app) if OAuth is not None else None
@@ -207,9 +227,135 @@ if oauth is not None and _oauth_enabled():
         client_id=app.config["OIDC_CLIENT_ID"],
         client_secret=app.config["OIDC_CLIENT_SECRET"],
         client_kwargs={
-            "scope": "openid profile email",
+            # Customize via env var OIDC_SCOPES.
+            # Recommended if using Graph-based group lookup: add GroupMember.Read.All (requires admin consent).
+            "scope": os.getenv("OIDC_SCOPES", "openid profile email User.Read"),
         },
     )
+
+
+def _split_csv(value: str) -> list[str]:
+    parts = [p.strip() for p in (value or "").split(",")]
+    return [p for p in parts if p]
+
+
+def _csrf_token() -> str:
+    token = session.get("_csrf_token")
+    if token and isinstance(token, str):
+        return token
+    token = secrets.token_urlsafe(32)
+    session["_csrf_token"] = token
+    return token
+
+
+app.jinja_env.globals["csrf_token"] = _csrf_token
+
+
+@app.before_request
+def _csrf_protect():
+    # Enforce CSRF on state-changing requests.
+    if request.method not in {"POST", "PUT", "PATCH", "DELETE"}:
+        return None
+    if request.path.startswith("/static/"):
+        return None
+
+    sent = (
+        request.form.get("_csrf_token")
+        or request.headers.get("X-CSRF-Token")
+        or request.headers.get("X-CSRFToken")
+    )
+    expected = session.get("_csrf_token")
+    if not sent or not expected or str(sent) != str(expected):
+        abort(400)
+    return None
+
+
+@app.after_request
+def _security_headers(response):
+    # Basic defense-in-depth headers.
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault(
+        "Permissions-Policy",
+        "camera=(), microphone=(), geolocation=(), interest-cohort=()",
+    )
+
+    if _env_bool("CSP_ENABLED", True):
+        # Keep permissive enough for inline scripts already used in templates.
+        response.headers.setdefault(
+            "Content-Security-Policy",
+            " ".join(
+                [
+                    "default-src 'self';",
+                    "base-uri 'self';",
+                    "frame-ancestors 'self';",
+                    "img-src 'self' data:;",
+                    "style-src 'self' 'unsafe-inline';",
+                    "script-src 'self' 'unsafe-inline';",
+                    "object-src 'none';",
+                ]
+            ),
+        )
+    return response
+
+
+def _graph_get_member_of_group_names(access_token: str) -> list[str]:
+    if not access_token:
+        return []
+
+    url = "https://graph.microsoft.com/v1.0/me/memberOf?$select=displayName&$top=999"
+    headers = {"Authorization": f"Bearer {access_token}"}
+    names: list[str] = []
+
+    for _ in range(20):
+        resp = requests.get(url, headers=headers, timeout=10)
+        if resp.status_code != 200:
+            return []
+        data = resp.json() or {}
+        for item in (data.get("value") or []):
+            dn = (item or {}).get("displayName")
+            if dn:
+                names.append(str(dn))
+        next_link = data.get("@odata.nextLink")
+        if not next_link:
+            break
+        url = str(next_link)
+
+    # De-dup preserving order
+    seen: set[str] = set()
+    out: list[str] = []
+    for n in names:
+        key = n.strip().lower()
+        if key and key not in seen:
+            seen.add(key)
+            out.append(n)
+    return out
+
+
+def _compute_is_admin_from_entra(*, token: dict, userinfo: dict) -> bool:
+    allowed_names = {n.strip().lower() for n in _split_csv(app.config.get("ADMIN_ENTRA_GROUPS", ""))}
+    allowed_ids = {n.strip().lower() for n in _split_csv(app.config.get("ADMIN_ENTRA_GROUP_IDS", ""))}
+
+    if not allowed_names and not allowed_ids:
+        return False
+
+    # If the ID token contains a 'groups' claim, it is usually a list of GUIDs.
+    groups_claim = userinfo.get("groups")
+    if isinstance(groups_claim, list) and allowed_ids:
+        for gid in groups_claim:
+            if str(gid).strip().lower() in allowed_ids:
+                return True
+
+    if not app.config.get("ADMIN_ENTRA_GRAPH_LOOKUP", True):
+        return False
+
+    access_token = str(token.get("access_token") or "").strip()
+    group_names = _graph_get_member_of_group_names(access_token)
+    for name in group_names:
+        if name.strip().lower() in allowed_names:
+            return True
+    return False
 
 
 def is_authenticated() -> bool:
@@ -266,6 +412,13 @@ def request_entity_too_large(_err):
     return redirect(request.referrer or url_for("admin_dashboard"))
 
 
+@app.errorhandler(400)
+def bad_request(_err):
+    # Most common 400 in this app will be missing/invalid CSRF.
+    flash("Bad request. Please refresh the page and try again.", "warning")
+    return redirect(request.referrer or url_for("index"))
+
+
 @app.route("/login")
 def login():
     if not _oauth_enabled():
@@ -316,6 +469,17 @@ def auth_callback():
         "oid": userinfo.get("oid") or userinfo.get("sub") or "",
     }
 
+    # Evaluate admin rights based on Entra group membership.
+    try:
+        is_entra_admin = _compute_is_admin_from_entra(token=token or {}, userinfo=userinfo or {})
+    except Exception:
+        is_entra_admin = False
+    session["user"]["is_admin"] = bool(is_entra_admin)
+    if is_entra_admin:
+        session["is_admin"] = True
+    else:
+        session.pop("is_admin", None)
+
     next_url = session.pop("post_login_redirect", "")
     if next_url and next_url.startswith("/"):
         return redirect(next_url)
@@ -326,6 +490,7 @@ def auth_callback():
 def logout():
     session.pop("user", None)
     session.pop("is_admin", None)
+    session.pop("_csrf_token", None)
 
     if not _oauth_enabled():
         return redirect(url_for("index"))
@@ -820,7 +985,10 @@ def _import_kpis(workbook) -> None:
 
 
 def is_admin() -> bool:
-    return session.get("is_admin", False) is True
+    if session.get("is_admin", False) is True:
+        return True
+    user = session.get("user") or {}
+    return bool((user or {}).get("is_admin"))
 
 
 def require_admin() -> bool:
@@ -1851,6 +2019,12 @@ def admin_archive_closed_attachments():
 
 @app.route("/admin", methods=["GET", "POST"])
 def admin():
+    # If admin password mode is disabled, /admin becomes an access-check page.
+    if not app.config.get("ADMIN_PASSWORD_ENABLED", True):
+        if is_admin():
+            return redirect(url_for("admin_dashboard"))
+        return render_template("admin_login.html", password_enabled=False), 403
+
     if request.method == "POST":
         password = request.form.get("password", "")
         if password == app.config["ADMIN_PASSWORD"]:
@@ -1862,7 +2036,7 @@ def admin():
     if is_admin():
         return redirect(url_for("admin_dashboard"))
 
-    return render_template("admin_login.html")
+    return render_template("admin_login.html", password_enabled=True)
 
 
 @app.route("/admin/logout")
@@ -2433,6 +2607,19 @@ def admin_risk_detail(risk_id: int):
             (risk_id,),
         ).fetchall()
 
+        assignees = [
+            row["assigned_to"]
+            for row in conn.execute(
+                "SELECT DISTINCT TRIM(assigned_to) as assigned_to FROM risks WHERE assigned_to IS NOT NULL AND TRIM(assigned_to) <> ''"
+            )
+        ]
+        owners = [
+            row["owner"]
+            for row in conn.execute(
+                "SELECT DISTINCT TRIM(owner) as owner FROM risks WHERE owner IS NOT NULL AND TRIM(owner) <> ''"
+            )
+        ]
+
         if request.method == "POST":
             status = request.form.get("status", "New")
             owner = request.form.get("owner", "")
@@ -2622,6 +2809,8 @@ def admin_risk_detail(risk_id: int):
         events=events,
         attachments=attachments,
         severity_options=SEVERITY_OPTIONS,
+        assignees=sorted(set(assignees)),
+        owners=sorted(set(owners)),
     )
 
 

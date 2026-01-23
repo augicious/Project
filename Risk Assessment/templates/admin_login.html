@@ -3,12 +3,22 @@
 {% block content %}
 <section class="card narrow">
     <h2>Admin Login</h2>
-    <form method="post" class="form">
-        <label>
-            Admin Password
-            <input type="password" name="password" required />
-        </label>
-        <button type="submit">Login</button>
-    </form>
+    {% if password_enabled %}
+        <form method="post" class="form">
+            <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
+            <label>
+                Admin Password
+                <input type="password" name="password" required />
+            </label>
+            <button type="submit">Login</button>
+        </form>
+    {% else %}
+        <p class="subtitle">You are signed in, but you do not have admin access.</p>
+        <p class="muted">Admins must be a member of the Entra groups: Risk Management or IS-Administrator.</p>
+        <div class="button-row">
+            <a class="button secondary" href="{{ url_for('index') }}">Back to Risks</a>
+            <a class="button" href="{{ url_for('logout') }}">Sign out</a>
+        </div>
+    {% endif %}
 </section>
 {% endblock %}

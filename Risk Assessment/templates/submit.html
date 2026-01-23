@@ -4,6 +4,7 @@
 <section class="card">
     <h2>Submit a Risk Assessment</h2>
     <form method="post" class="form">
+        <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
         <label>
             <span class="field-label" tabindex="0" data-tooltip="Short summary of the risk.">Title</span>
             <input type="text" name="title" required />

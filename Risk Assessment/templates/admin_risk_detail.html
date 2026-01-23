@@ -14,6 +14,7 @@
     </div>
 
     <form method="post" class="form" id="admin-risk-form">
+        <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
         <div class="form-grid">
             <label>
                 Severity
@@ -25,7 +26,7 @@
             </label>
             <label>
                 Assigned To
-                <input type="text" name="assigned_to" value="{{ risk['assigned_to'] or '' }}" placeholder="name@hdh.org" inputmode="email" autocomplete="email" />
+                <input type="text" name="assigned_to" value="{{ risk['assigned_to'] or '' }}" placeholder="name@hdh.org" inputmode="email" autocomplete="email" list="assignee-options" />
             </label>
         </div>
         <label>
@@ -43,8 +44,20 @@
         </label>
         <label>
             Owner
-            <input type="text" name="owner" value="{{ risk['owner'] }}" autocomplete="organization" />
+            <input type="text" name="owner" value="{{ risk['owner'] }}" autocomplete="organization" list="owner-options" />
         </label>
+
+        <datalist id="assignee-options">
+            {% for a in assignees %}
+                <option value="{{ a }}"></option>
+            {% endfor %}
+        </datalist>
+
+        <datalist id="owner-options">
+            {% for o in owners %}
+                <option value="{{ o }}"></option>
+            {% endfor %}
+        </datalist>
         <label>
             Priority (1-5)
             <input type="number" name="priority" min="1" max="5" step="1" value="{{ risk['priority'] }}" />
@@ -142,6 +155,7 @@
             <p class="subtitle">Upload supporting files (PDF, images, Office docs). Max {{ config.get('MAX_CONTENT_LENGTH', 0) // (1024*1024) }}MB per request.</p>
         </div>
         <form method="post" action="{{ url_for('admin_upload_attachments', risk_id=risk['id']) }}" enctype="multipart/form-data" class="attachment-upload">
+            <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
             <input type="file" name="files" multiple />
             <button type="submit">Upload</button>
         </form>
@@ -155,6 +169,7 @@
                                 <span class="badge secondary">Archived</span>
                             {% endif %}
                             <form method="post" action="{{ url_for('admin_delete_attachment', risk_id=risk['id'], attachment_id=a['id']) }}" onsubmit="return confirm('Delete this attachment?');">
+                                <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
                                 <button type="submit" class="button secondary">Delete</button>
                             </form>
                         </div>

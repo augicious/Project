@@ -90,5 +90,21 @@ Also ensure ARR is configured to **preserve host header** (common for correct re
 
 Microsoft 365 sign-in controls access to the site.
 
-Admin functionality still uses the existing admin password prompt (the `/admin` page) after sign-in.
-If you’d like admin to be based on Microsoft 365 group membership instead, tell me the group name/ID and I’ll wire it up.
+Admin functionality is controlled by Microsoft Entra group membership.
+
+Default admin groups:
+- `Risk Management`
+- `IS-Administrator`
+
+Configuration (env vars):
+- `ADMIN_ENTRA_GROUPS` = comma-separated Entra group display names (defaults to the two above)
+- `ADMIN_ENTRA_GRAPH_LOOKUP` = `true|false` (default `true`) to look up group names via Microsoft Graph on sign-in
+- Optional: `ADMIN_ENTRA_GROUP_IDS` = comma-separated group GUIDs (use this if you configure Entra to emit a `groups` claim in the ID token)
+
+Graph permissions:
+- If `ADMIN_ENTRA_GRAPH_LOOKUP=true`, the app needs an access token that can read the signed-in user’s group membership.
+- Set `OIDC_SCOPES` to include `GroupMember.Read.All` and grant admin consent in Entra.
+  Example:
+  - `OIDC_SCOPES=openid profile email User.Read GroupMember.Read.All`
+
+If you prefer the ID token `groups` claim (no Graph call), configure the app registration to emit group IDs and set `ADMIN_ENTRA_GROUP_IDS` accordingly.
