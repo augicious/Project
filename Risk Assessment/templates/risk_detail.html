@@ -124,9 +124,76 @@
         {% endif %}
     </div>
 
+    <details class="details" id="audit-trail">
+        <summary>Audit Trail ({{ events_pagination.total }})</summary>
+        <p class="subtitle">Recent changes to status, severity, assignment, and progress.</p>
+
+        {% if events %}
+            <div class="event-list">
+                {% for ev in events %}
+                    <div class="event">
+                        <div class="event-meta">
+                            <span class="badge">{{ ev['event_type'] }}</span>
+                            <span class="event-actor">{{ ev['actor'] or 'system' }}</span>
+                            <span class="event-time">{{ ev['created_at'][:19].replace('T', ' ') }}</span>
+                        </div>
+                        {% if ev['field'] %}
+                            <div class="event-body">
+                                <strong>{{ ev['field'] }}</strong>
+                                <span class="event-diff">{{ ev['old_value'] or '—' }} → {{ ev['new_value'] or '—' }}</span>
+                            </div>
+                        {% else %}
+                            <div class="event-body">
+                                <span class="event-diff">Created</span>
+                            </div>
+                        {% endif %}
+                    </div>
+                {% endfor %}
+            </div>
+
+            {% if events_pagination.pages > 1 %}
+                <div class="pager" aria-label="Audit trail pagination" style="margin-top: 12px;">
+                    <div class="pager-left">
+                        <span class="muted">Showing page {{ events_pagination.page }} of {{ events_pagination.pages }} ({{ events_pagination.total }} total)</span>
+                    </div>
+                    <div class="pager-right">
+                        {% if events_pagination.has_prev %}
+                            <a class="button secondary" href="{{ events_pagination.prev_url }}#audit-trail">Previous</a>
+                        {% endif %}
+                        {% if events_pagination.has_next %}
+                            <a class="button secondary" href="{{ events_pagination.next_url }}#audit-trail">Next</a>
+                        {% endif %}
+                    </div>
+                </div>
+            {% endif %}
+        {% else %}
+            <div class="empty">No activity recorded yet.</div>
+        {% endif %}
+    </details>
+
     <div class="meta">
         <span>Created: {{ risk['created_at'][:10] }}</span>
         <span>Updated: {{ risk['updated_at'][:10] }}</span>
     </div>
+
+    <script>
+        (function () {
+            if (window.location.hash !== '#audit-trail') {
+                return;
+            }
+            const el = document.getElementById('audit-trail');
+            if (!el) {
+                return;
+            }
+            if (el.tagName && el.tagName.toLowerCase() === 'details') {
+                el.open = true;
+            }
+            try {
+                el.scrollIntoView({ block: 'start', behavior: 'smooth' });
+            } catch (e) {
+                // ignore
+            }
+        })();
+    </script>
 </section>
 {% endblock %}

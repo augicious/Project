@@ -1953,8 +1953,29 @@ def submit():
 
 @app.route("/risk/<int:risk_id>")
 def risk_detail(risk_id: int):
+    try:
+        events_page = int(float(request.args.get("events_page", "1")))
+    except ValueError:
+        events_page = 1
+    events_page = max(1, events_page)
+    events_per_page = 25
+
     with get_db_connection() as conn:
         risk = conn.execute("SELECT * FROM risks WHERE id = ?", (risk_id,)).fetchone()
+
+        events_total = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM risk_events WHERE risk_id = ?",
+                (risk_id,),
+            ).fetchone()[0]
+        )
+        events_pagination = _pager(total=events_total, page=events_page, per_page=events_per_page)
+        events_offset = (int(events_pagination["page"]) - 1) * events_per_page
+        events = conn.execute(
+            "SELECT * FROM risk_events WHERE risk_id = ? ORDER BY id DESC LIMIT ? OFFSET ?",
+            (risk_id, events_per_page, events_offset),
+        ).fetchall()
+
         attachments = conn.execute(
             "SELECT * FROM risk_attachments WHERE risk_id = ? ORDER BY id DESC",
             (risk_id,),
@@ -1962,7 +1983,24 @@ def risk_detail(risk_id: int):
     if risk is None:
         flash("Risk not found.", "warning")
         return redirect(url_for("index"))
-    return render_template("risk_detail.html", risk=risk, attachments=attachments)
+
+    events_query_args = request.args.to_dict(flat=True)
+    if events_pagination["has_prev"]:
+        prev_args = dict(events_query_args)
+        prev_args["events_page"] = int(events_pagination["page"]) - 1
+        events_pagination["prev_url"] = url_for("risk_detail", risk_id=risk_id, **prev_args)
+    if events_pagination["has_next"]:
+        next_args = dict(events_query_args)
+        next_args["events_page"] = int(events_pagination["page"]) + 1
+        events_pagination["next_url"] = url_for("risk_detail", risk_id=risk_id, **next_args)
+
+    return render_template(
+        "risk_detail.html",
+        risk=risk,
+        attachments=attachments,
+        events=events,
+        events_pagination=events_pagination,
+    )
 
 
 @app.route("/risk/<int:risk_id>/attachment/<int:attachment_id>")
@@ -3003,16 +3041,42 @@ def admin_risk_detail(risk_id: int):
     if not require_admin():
         return redirect(url_for("admin"))
 
+    try:
+        events_page = int(float(request.args.get("events_page", "1")))
+    except ValueError:
+        events_page = 1
+    events_page = max(1, events_page)
+    events_per_page = 25
+
     with get_db_connection() as conn:
         risk = conn.execute("SELECT * FROM risks WHERE id = ?", (risk_id,)).fetchone()
         if risk is None:
             flash("Risk not found.", "warning")
             return redirect(url_for("admin_dashboard"))
 
+        events_total = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM risk_events WHERE risk_id = ?",
+                (risk_id,),
+            ).fetchone()[0]
+        )
+        events_pagination = _pager(total=events_total, page=events_page, per_page=events_per_page)
+        events_offset = (int(events_pagination["page"]) - 1) * events_per_page
+
         events = conn.execute(
-            "SELECT * FROM risk_events WHERE risk_id = ? ORDER BY id DESC LIMIT 50",
-            (risk_id,),
+            "SELECT * FROM risk_events WHERE risk_id = ? ORDER BY id DESC LIMIT ? OFFSET ?",
+            (risk_id, events_per_page, events_offset),
         ).fetchall()
+
+        events_query_args = request.args.to_dict(flat=True)
+        if events_pagination["has_prev"]:
+            prev_args = dict(events_query_args)
+            prev_args["events_page"] = int(events_pagination["page"]) - 1
+            events_pagination["prev_url"] = url_for("admin_risk_detail", risk_id=risk_id, **prev_args)
+        if events_pagination["has_next"]:
+            next_args = dict(events_query_args)
+            next_args["events_page"] = int(events_pagination["page"]) + 1
+            events_pagination["next_url"] = url_for("admin_risk_detail", risk_id=risk_id, **next_args)
 
         attachments = conn.execute(
             "SELECT * FROM risk_attachments WHERE risk_id = ? ORDER BY id DESC",
@@ -3233,6 +3297,7 @@ def admin_risk_detail(risk_id: int):
         "admin_risk_detail.html",
         risk=risk,
         events=events,
+        events_pagination=events_pagination,
         attachments=attachments,
         tasks=tasks,
         severity_options=SEVERITY_OPTIONS,

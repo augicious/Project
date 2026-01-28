@@ -149,11 +149,9 @@
         <button type="submit">Save Updates</button>
     </form>
 
-    <div class="section-block">
-        <div class="section-title">
-            <h3>Tasks</h3>
-            <p class="subtitle">Track work items, due dates, and reminders for this risk.</p>
-        </div>
+    <details class="details">
+        <summary>Tasks ({{ tasks|length }})</summary>
+        <p class="subtitle">Track work items, due dates, and reminders for this risk.</p>
 
         {% if tasks %}
             <div class="attachment-list">
@@ -230,7 +228,7 @@
                 </div>
             </form>
         </div>
-    </div>
+    </details>
 
     <div class="section-block">
         <div class="section-title">
@@ -265,11 +263,9 @@
         {% endif %}
     </div>
 
-    <div class="section-block">
-        <div class="section-title">
-            <h3>Audit Trail</h3>
-            <p class="subtitle">Recent changes to status, severity, assignment, and progress.</p>
-        </div>
+    <details class="details" id="audit-trail">
+        <summary>Audit Trail ({{ events_pagination.total }})</summary>
+        <p class="subtitle">Recent changes to status, severity, assignment, and progress.</p>
         {% if events %}
             <div class="event-list">
                 {% for ev in events %}
@@ -292,10 +288,46 @@
                     </div>
                 {% endfor %}
             </div>
+
+            {% if events_pagination.pages > 1 %}
+                <div class="pager" aria-label="Audit trail pagination" style="margin-top: 12px;">
+                    <div class="pager-left">
+                        <span class="muted">Showing page {{ events_pagination.page }} of {{ events_pagination.pages }} ({{ events_pagination.total }} total)</span>
+                    </div>
+                    <div class="pager-right">
+                        {% if events_pagination.has_prev %}
+                            <a class="button secondary" href="{{ events_pagination.prev_url }}#audit-trail">Previous</a>
+                        {% endif %}
+                        {% if events_pagination.has_next %}
+                            <a class="button secondary" href="{{ events_pagination.next_url }}#audit-trail">Next</a>
+                        {% endif %}
+                    </div>
+                </div>
+            {% endif %}
         {% else %}
             <div class="empty">No activity recorded yet.</div>
         {% endif %}
-    </div>
+    </details>
+
+    <script>
+        (function () {
+            if (window.location.hash !== '#audit-trail') {
+                return;
+            }
+            const el = document.getElementById('audit-trail');
+            if (!el) {
+                return;
+            }
+            if (el.tagName && el.tagName.toLowerCase() === 'details') {
+                el.open = true;
+            }
+            try {
+                el.scrollIntoView({ block: 'start', behavior: 'smooth' });
+            } catch (e) {
+                // ignore
+            }
+        })();
+    </script>
 
     <div class="detail-grid">
         <div>
