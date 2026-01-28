@@ -26,6 +26,9 @@
                 <a href="{{ url_for('index') }}">Risks</a>
                 <a href="{{ url_for('submit') }}">Submit Risk</a>
                 <a href="{{ url_for('admin') }}">Admin</a>
+                {% if session.get('is_admin') or (session.get('user') and session['user'].get('is_admin')) %}
+                    <a href="{{ url_for('admin_tasks') }}">Tasks</a>
+                {% endif %}
                 {% if session.get('user') %}
                     <span class="nav-user" title="Signed in">{{ session['user'].get('preferred_username') or session['user'].get('name') }}</span>
                     <a class="nav-logout" href="{{ url_for('logout') }}">Logout</a>

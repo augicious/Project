@@ -18,6 +18,7 @@
                 <button type="submit" class="button secondary" title="Moves attachments for Closed risks older than the cutoff into archive storage.">Archive old attachments</button>
             </form>
             <a class="button secondary" href="{{ url_for('admin_export', status=status_filter, severity=severity_filter, assigned=assignee_filter, q=query_text) }}">Exports</a>
+            <a class="button secondary" href="{{ url_for('admin_tasks') }}">Tasks</a>
             <a class="button" href="{{ url_for('logout') }}">Sign out</a>
         </div>
     </div>

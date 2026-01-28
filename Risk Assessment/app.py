@@ -39,6 +39,8 @@ except ValueError:
 
 SEVERITY_OPTIONS = ["Low", "Medium", "High", "Critical"]
 
+TASK_STATUS_OPTIONS = ["Open", "In Progress", "Done", "Blocked", "Cancelled"]
+
 DEFAULT_ARCHIVE_AFTER_DAYS = 180
 try:
     ARCHIVE_AFTER_DAYS = int(float(os.getenv("ATTACHMENT_ARCHIVE_AFTER_DAYS", str(DEFAULT_ARCHIVE_AFTER_DAYS))))
@@ -585,6 +587,25 @@ def init_db() -> None:
             """
         )
 
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS risk_tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                risk_id INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                notes TEXT,
+                status TEXT NOT NULL DEFAULT 'Open',
+                assigned_to TEXT,
+                due_date TEXT,
+                created_by TEXT,
+                updated_by TEXT,
+                completed_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+
         # Lightweight migrations (safe on existing DBs)
         cols = [row[1] for row in conn.execute("PRAGMA table_info(risk_attachments)").fetchall()]
         if "is_archived" not in cols:
@@ -643,6 +664,10 @@ def init_db() -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_risks_source_sheet ON risks(source_sheet)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_risk_events_risk_type_created ON risk_events(risk_id, event_type, created_at)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_risk_attachments_risk_id ON risk_attachments(risk_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_risk_tasks_risk_id ON risk_tasks(risk_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_risk_tasks_status ON risk_tasks(status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_risk_tasks_due_date ON risk_tasks(due_date)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_risk_tasks_assigned_to ON risk_tasks(assigned_to)")
         conn.commit()
 
 
@@ -1032,6 +1057,28 @@ def _parse_date(value: str | None) -> datetime | None:
         return datetime.fromisoformat(text)
     except ValueError:
         return None
+
+
+def _today_ymd() -> str:
+    return datetime.utcnow().date().isoformat()
+
+
+def _parse_ymd(value: str | None) -> str:
+    text = (value or "").strip()
+    if not text:
+        return ""
+    # Accept ISO date prefix; store normalized YYYY-MM-DD
+    return text[:10]
+
+
+def _normalize_task_status(value: str | None) -> str:
+    text = (value or "").strip()
+    if not text:
+        return "Open"
+    for opt in TASK_STATUS_OPTIONS:
+        if opt.lower() == text.lower():
+            return opt
+    return "Open"
 
 
 def _compute_kpi_metrics(risks: list[sqlite3.Row]) -> dict[str, dict[str, str]]:
@@ -2130,6 +2177,34 @@ def admin_dashboard():
             params,
         ).fetchall()
 
+        # Task queue metrics (global; independent of risk filters)
+        today = _today_ymd()
+        tasks_overdue = int(
+            conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM risk_tasks
+                WHERE LOWER(TRIM(status)) NOT IN ('done','cancelled')
+                    AND TRIM(COALESCE(due_date,'')) <> ''
+                    AND DATE(due_date) < DATE(?)
+                """.strip(),
+                (today,),
+            ).fetchone()[0]
+        )
+        tasks_due_7 = int(
+            conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM risk_tasks
+                WHERE LOWER(TRIM(status)) NOT IN ('done','cancelled')
+                    AND TRIM(COALESCE(due_date,'')) <> ''
+                    AND DATE(due_date) >= DATE(?)
+                    AND DATE(due_date) <= DATE(?, '+7 days')
+                """.strip(),
+                (today, today),
+            ).fetchone()[0]
+        )
+
     open_statuses = {"new", "in review", "in progress", "postponed"}
     open_status_placeholders = ",".join(["?"] * len(open_statuses))
     open_params = sorted(open_statuses)
@@ -2224,6 +2299,8 @@ def admin_dashboard():
             "High/Critical": high_count,
             "Unassigned": unassigned_count,
             "My queue": my_count,
+            "Overdue tasks": tasks_overdue,
+            "Tasks due (7d)": tasks_due_7,
         },
         queue_links={
             "Open": url_for("admin_dashboard", status="all", severity="all", assigned="all"),
@@ -2236,12 +2313,347 @@ def admin_dashboard():
             "My queue": url_for(
                 "admin_dashboard", status="all", severity="all", assigned="me"
             ),
+            "Overdue tasks": url_for("admin_tasks", due="overdue"),
+            "Tasks due (7d)": url_for("admin_tasks", due="due_7"),
         },
         sla_cards={
             "Median first touch": (f"{median_first_touch:.1f}h" if median_first_touch is not None else "—"),
             "Median time to close": (f"{median_close_days:.1f}d" if median_close_days is not None else "—"),
         },
     )
+
+
+@app.route("/admin/tasks")
+def admin_tasks():
+    if not require_admin():
+        return redirect(url_for("admin"))
+
+    status_filter = request.args.get("status", "open").strip().lower()
+    assignee_filter = request.args.get("assigned", "all").strip().lower()
+    due_filter = request.args.get("due", "all").strip().lower()
+    query_text = request.args.get("q", "").strip()
+
+    current_user = str((session.get("user") or {}).get("preferred_username") or "").strip()
+    today = _today_ymd()
+
+    filters: list[str] = []
+    params: list[object] = []
+
+    if status_filter == "open":
+        filters.append("LOWER(TRIM(t.status)) NOT IN ('done','cancelled')")
+    elif status_filter == "done":
+        filters.append("LOWER(TRIM(t.status)) = 'done'")
+    elif status_filter == "cancelled":
+        filters.append("LOWER(TRIM(t.status)) = 'cancelled'")
+
+    if assignee_filter == "me" and current_user:
+        filters.append("LOWER(TRIM(COALESCE(t.assigned_to,''))) = ?")
+        params.append(current_user.lower())
+    elif assignee_filter == "unassigned":
+        filters.append("TRIM(COALESCE(t.assigned_to,'')) = ''")
+
+    if due_filter == "overdue":
+        filters.append("TRIM(COALESCE(t.due_date,'')) <> '' AND DATE(t.due_date) < DATE(?)")
+        params.append(today)
+    elif due_filter == "due_7":
+        filters.append("TRIM(COALESCE(t.due_date,'')) <> '' AND DATE(t.due_date) <= DATE(?, '+7 days')")
+        params.append(today)
+    elif due_filter == "due_30":
+        filters.append("TRIM(COALESCE(t.due_date,'')) <> '' AND DATE(t.due_date) <= DATE(?, '+30 days')")
+        params.append(today)
+    elif due_filter == "no_due":
+        filters.append("TRIM(COALESCE(t.due_date,'')) = ''")
+
+    if query_text:
+        filters.append("(LOWER(t.title) LIKE ? OR LOWER(COALESCE(t.notes,'')) LIKE ? OR LOWER(r.title) LIKE ?)")
+        like = f"%{query_text.lower()}%"
+        params.extend([like, like, like])
+
+    where_sql = (" WHERE " + " AND ".join(filters)) if filters else ""
+
+    with get_db_connection() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT
+                t.*, r.title as risk_title, r.severity as risk_severity, r.status as risk_status
+            FROM risk_tasks t
+            JOIN risks r ON r.id = t.risk_id
+            {where_sql}
+            ORDER BY
+                CASE WHEN LOWER(TRIM(t.status)) IN ('done','cancelled') THEN 1 ELSE 0 END,
+                CASE WHEN TRIM(COALESCE(t.due_date,'')) = '' THEN 1 ELSE 0 END,
+                t.due_date ASC,
+                t.id DESC
+            """.strip(),
+            params,
+        ).fetchall()
+
+        assignees = [
+            row["assigned_to"]
+            for row in conn.execute(
+                "SELECT DISTINCT TRIM(assigned_to) as assigned_to FROM risk_tasks WHERE assigned_to IS NOT NULL AND TRIM(assigned_to) <> ''"
+            )
+        ]
+
+    return render_template(
+        "admin_tasks.html",
+        tasks=rows,
+        task_status_options=TASK_STATUS_OPTIONS,
+        assignees=sorted(set(assignees)),
+        status_filter=status_filter,
+        assignee_filter=assignee_filter,
+        due_filter=due_filter,
+        query_text=query_text,
+        today=today,
+    )
+
+
+def _send_task_reminders(*, days_ahead: int = 3) -> tuple[int, int]:
+    """Send reminder emails for tasks due within the next N days (including overdue).
+
+    Returns: (recipient_count, task_count)
+    """
+
+    days_ahead = max(0, min(int(days_ahead), 60))
+    cutoff = datetime.utcnow().date().isoformat()
+
+    with get_db_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                t.id as task_id,
+                t.risk_id as risk_id,
+                t.title as task_title,
+                t.due_date as due_date,
+                t.assigned_to as assigned_to,
+                r.title as risk_title
+            FROM risk_tasks t
+            JOIN risks r ON r.id = t.risk_id
+            WHERE LOWER(TRIM(t.status)) NOT IN ('done','cancelled')
+              AND TRIM(COALESCE(t.assigned_to,'')) <> ''
+              AND TRIM(COALESCE(t.due_date,'')) <> ''
+              AND DATE(t.due_date) <= DATE(?, '+' || ? || ' days')
+            ORDER BY LOWER(TRIM(t.assigned_to)), DATE(t.due_date), t.id
+            """.strip(),
+            (cutoff, str(days_ahead)),
+        ).fetchall()
+
+        by_recipient: dict[str, list[sqlite3.Row]] = {}
+        for row in rows:
+            addr = (row["assigned_to"] or "").strip()
+            if not addr or "@" not in addr:
+                continue
+            by_recipient.setdefault(addr, []).append(row)
+
+        base_url = os.getenv("APP_BASE_URL", "").strip() or request.url_root.rstrip("/")
+        actor = _current_actor()
+        now = datetime.utcnow().isoformat()
+        recipients_sent = 0
+        tasks_in_emails = 0
+
+        for addr, items in by_recipient.items():
+            lines: list[str] = []
+            for it in items:
+                link = f"{base_url}{url_for('admin_risk_detail', risk_id=int(it['risk_id']))}"
+                due = (it["due_date"] or "")[:10]
+                lines.append(
+                    f"<li><strong>{(it['risk_title'] or '').strip()}</strong>: {it['task_title']} (due {due}) — <a href=\"{link}\">open</a></li>"
+                )
+
+            if not lines:
+                continue
+
+            html = (
+                f"<p>You have {len(lines)} risk task(s) due within {days_ahead} day(s) (including overdue).</p>"
+                f"<ul>{''.join(lines)}</ul>"
+            )
+
+            sent = _send_email(
+                subject=f"Risk Tasks Due (next {days_ahead}d)",
+                html_body=html,
+                to_addrs=[addr],
+            )
+
+            if sent:
+                recipients_sent += 1
+                tasks_in_emails += len(lines)
+                for it in items:
+                    _log_event(
+                        conn,
+                        risk_id=int(it["risk_id"]),
+                        event_type="notify",
+                        field="task_reminder",
+                        old_value="",
+                        new_value=addr,
+                        actor=actor,
+                    )
+
+        conn.commit()
+
+    return recipients_sent, tasks_in_emails
+
+
+@app.route("/admin/tasks/reminders/send", methods=["POST"])
+def admin_send_task_reminders():
+    if not require_admin():
+        return redirect(url_for("admin"))
+
+    try:
+        days_ahead = int(float((request.form.get("days_ahead") or "").strip() or "3"))
+    except ValueError:
+        days_ahead = 3
+
+    recipients_sent, tasks_in_emails = _send_task_reminders(days_ahead=days_ahead)
+    flash(f"Sent {recipients_sent} reminder email(s) covering {tasks_in_emails} task(s).", "success")
+    return redirect(request.referrer or url_for("admin_tasks"))
+
+
+@app.route("/admin/risk/<int:risk_id>/tasks/add", methods=["POST"])
+def admin_task_add(risk_id: int):
+    if not require_admin():
+        return redirect(url_for("admin"))
+
+    title = (request.form.get("title") or "").strip()
+    assigned_to = (request.form.get("assigned_to") or "").strip()
+    due_date = _parse_ymd(request.form.get("due_date"))
+    notes = (request.form.get("notes") or "").strip()
+
+    if not title:
+        flash("Task title is required.", "warning")
+        return redirect(url_for("admin_risk_detail", risk_id=risk_id))
+
+    actor = _current_actor()
+    now = datetime.utcnow().isoformat()
+
+    with get_db_connection() as conn:
+        exists = conn.execute("SELECT 1 FROM risks WHERE id = ?", (risk_id,)).fetchone()
+        if not exists:
+            flash("Risk not found.", "warning")
+            return redirect(url_for("admin_dashboard"))
+
+        cur = conn.execute(
+            """
+            INSERT INTO risk_tasks (risk_id, title, notes, status, assigned_to, due_date, created_by, updated_by, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """.strip(),
+            (
+                risk_id,
+                title,
+                notes,
+                "Open",
+                assigned_to,
+                due_date,
+                actor,
+                actor,
+                now,
+                now,
+            ),
+        )
+        task_id = int(cur.lastrowid)
+        _log_event(
+            conn,
+            risk_id=risk_id,
+            event_type="task_create",
+            field="task",
+            old_value="",
+            new_value=f"#{task_id} {title}"[:500],
+            actor=actor,
+        )
+        conn.execute(
+            "UPDATE risks SET updated_by = ?, updated_at = ? WHERE id = ?",
+            (actor, now, risk_id),
+        )
+        conn.commit()
+
+    flash("Task added.", "success")
+    return redirect(url_for("admin_risk_detail", risk_id=risk_id))
+
+
+@app.route("/admin/tasks/<int:task_id>/status", methods=["POST"])
+def admin_task_set_status(task_id: int):
+    if not require_admin():
+        return redirect(url_for("admin"))
+
+    status = _normalize_task_status(request.form.get("status"))
+    actor = _current_actor()
+    now = datetime.utcnow().isoformat()
+
+    with get_db_connection() as conn:
+        task = conn.execute("SELECT * FROM risk_tasks WHERE id = ?", (task_id,)).fetchone()
+        if task is None:
+            flash("Task not found.", "warning")
+            return redirect(request.referrer or url_for("admin_tasks"))
+
+        risk_id = int(task["risk_id"])
+        old_status = (task["status"] or "").strip()
+
+        completed_at = (task["completed_at"] or "").strip()
+        if status == "Done" and not completed_at:
+            completed_at = now
+        if status != "Done":
+            completed_at = ""
+
+        conn.execute(
+            """
+            UPDATE risk_tasks
+            SET status = ?, completed_at = ?, updated_by = ?, updated_at = ?
+            WHERE id = ?
+            """.strip(),
+            (status, completed_at, actor, now, task_id),
+        )
+        if old_status != status:
+            _log_event(
+                conn,
+                risk_id=risk_id,
+                event_type="task_update",
+                field="task_status",
+                old_value=f"#{task_id} {old_status}"[:500],
+                new_value=f"#{task_id} {status}"[:500],
+                actor=actor,
+            )
+        conn.execute(
+            "UPDATE risks SET updated_by = ?, updated_at = ? WHERE id = ?",
+            (actor, now, risk_id),
+        )
+        conn.commit()
+
+    flash("Task updated.", "success")
+    return redirect(request.referrer or url_for("admin_tasks"))
+
+
+@app.route("/admin/tasks/<int:task_id>/delete", methods=["POST"])
+def admin_task_delete(task_id: int):
+    if not require_admin():
+        return redirect(url_for("admin"))
+
+    actor = _current_actor()
+    now = datetime.utcnow().isoformat()
+
+    with get_db_connection() as conn:
+        task = conn.execute("SELECT * FROM risk_tasks WHERE id = ?", (task_id,)).fetchone()
+        if task is None:
+            flash("Task not found.", "warning")
+            return redirect(request.referrer or url_for("admin_tasks"))
+        risk_id = int(task["risk_id"])
+        title = (task["title"] or "").strip()
+        conn.execute("DELETE FROM risk_tasks WHERE id = ?", (task_id,))
+        _log_event(
+            conn,
+            risk_id=risk_id,
+            event_type="task_delete",
+            field="task",
+            old_value=f"#{task_id} {title}"[:500],
+            new_value="",
+            actor=actor,
+        )
+        conn.execute(
+            "UPDATE risks SET updated_by = ?, updated_at = ? WHERE id = ?",
+            (actor, now, risk_id),
+        )
+        conn.commit()
+
+    flash("Task deleted.", "success")
+    return redirect(request.referrer or url_for("admin_tasks"))
 
 
 @app.route("/admin/bulk_update", methods=["POST"])
@@ -2607,6 +3019,20 @@ def admin_risk_detail(risk_id: int):
             (risk_id,),
         ).fetchall()
 
+        tasks = conn.execute(
+            """
+            SELECT *
+            FROM risk_tasks
+            WHERE risk_id = ?
+            ORDER BY
+                CASE WHEN LOWER(TRIM(status)) IN ('done','cancelled') THEN 1 ELSE 0 END,
+                CASE WHEN TRIM(COALESCE(due_date,'')) = '' THEN 1 ELSE 0 END,
+                due_date ASC,
+                id DESC
+            """.strip(),
+            (risk_id,),
+        ).fetchall()
+
         assignees = [
             row["assigned_to"]
             for row in conn.execute(
@@ -2808,9 +3234,11 @@ def admin_risk_detail(risk_id: int):
         risk=risk,
         events=events,
         attachments=attachments,
+        tasks=tasks,
         severity_options=SEVERITY_OPTIONS,
         assignees=sorted(set(assignees)),
         owners=sorted(set(owners)),
+        task_status_options=TASK_STATUS_OPTIONS,
     )
 
 
