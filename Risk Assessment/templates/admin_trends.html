@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="card">
+    <div class="detail-header">
+        <div>
+            <h2>Risk Score Trends</h2>
+            <p class="subtitle">Daily snapshots of High/Critical counts over time.</p>
+        </div>
+        <div class="button-row">
+            <a class="button secondary" href="{{ url_for('admin_dashboard') }}">Back to dashboard</a>
+            <a class="button secondary" href="{{ url_for('admin_heatmap') }}">Heatmap</a>
+        </div>
+    </div>
+
+    <div class="section-block">
+        <div class="section-title">
+            <h3>Snapshots</h3>
+            <p class="subtitle">Latest snapshot: {{ latest_date if latest_date else '—' }} • Today: {{ today }}</p>
+        </div>
+
+        <form method="post" action="{{ url_for('admin_trends_snapshot') }}" class="form">
+            <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
+            <div class="button-row" style="margin-top: 10px;">
+                <button type="submit">Capture snapshot now</button>
+            </div>
+        </form>
+    </div>
+
+    <div class="section-block" style="margin-top: 12px;">
+        <div class="section-title">
+            <h3>Last 60 days</h3>
+            <p class="subtitle">Counts are based on snapshot rows (only risks with at least one computed score are recorded).</p>
+        </div>
+
+        {% if rows %}
+            <div style="overflow:auto;">
+                <table class="table-plain" style="min-width: 780px; width: 100%; border-collapse: collapse;">
+                    <thead>
+                        <tr>
+                            <th style="text-align:left; padding: 8px;">Date</th>
+                            <th style="text-align:right; padding: 8px;">Total</th>
+                            <th style="text-align:right; padding: 8px;">High/Critical (Initial)</th>
+                            <th style="text-align:right; padding: 8px;">Critical (Initial)</th>
+                            <th style="text-align:right; padding: 8px;">High/Critical (Residual)</th>
+                            <th style="text-align:right; padding: 8px;">Critical (Residual)</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for r in rows %}
+                            <tr>
+                                <td style="padding: 8px; border-top: 1px solid rgba(255,255,255,0.08);">{{ r['snapshot_date'] }}</td>
+                                <td style="padding: 8px; border-top: 1px solid rgba(255,255,255,0.08); text-align:right;">{{ r['total'] }}</td>
+                                <td style="padding: 8px; border-top: 1px solid rgba(255,255,255,0.08); text-align:right;">{{ r['hi_init'] or 0 }}</td>
+                                <td style="padding: 8px; border-top: 1px solid rgba(255,255,255,0.08); text-align:right;">{{ r['crit_init'] or 0 }}</td>
+                                <td style="padding: 8px; border-top: 1px solid rgba(255,255,255,0.08); text-align:right;">{{ r['hi_res'] or 0 }}</td>
+                                <td style="padding: 8px; border-top: 1px solid rgba(255,255,255,0.08); text-align:right;">{{ r['crit_res'] or 0 }}</td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        {% else %}
+            <div class="empty">No snapshots yet. Click “Capture snapshot now” to start trending.</div>
+        {% endif %}
+    </div>
+</section>
+{% endblock %}

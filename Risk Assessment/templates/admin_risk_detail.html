@@ -309,6 +309,87 @@
         {% endif %}
     </details>
 
+    <details class="details" id="comments">
+        <summary>Comments &amp; Watchers ({{ comments|length }})</summary>
+        <p class="subtitle">Add notes and subscribe users for comment notifications.</p>
+
+        <div class="section-block" style="margin-top: 12px;">
+            <div class="section-title">
+                <h3>Watchers</h3>
+                <p class="subtitle">Watchers receive email when a new comment is added.</p>
+            </div>
+
+            {% if watchers %}
+                <div class="attachment-list">
+                    {% for w in watchers %}
+                        <div class="attachment">
+                            <div class="attachment-row">
+                                <span>{{ w['email'] }}</span>
+                                <form method="post" action="{{ url_for('admin_risk_watchers_remove', risk_id=risk['id'], watcher_id=w['id']) }}" onsubmit="return confirm('Remove watcher?');">
+                                    <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
+                                    <button type="submit" class="button secondary">Remove</button>
+                                </form>
+                            </div>
+                            <small class="muted">Added {{ (w['created_at'] or '')[:19].replace('T', ' ') }}{% if w['created_by'] %} • {{ w['created_by'] }}{% endif %}</small>
+                        </div>
+                    {% endfor %}
+                </div>
+            {% else %}
+                <div class="empty">No watchers yet.</div>
+            {% endif %}
+
+            <form method="post" action="{{ url_for('admin_risk_watchers_add', risk_id=risk['id']) }}" class="form" style="margin-top: 10px;">
+                <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
+                <div class="form-grid">
+                    <label style="grid-column: 1 / -1;">
+                        Add watcher email(s)
+                        <input type="text" name="emails" placeholder="name@hdh.org, other@hdh.org" />
+                    </label>
+                </div>
+                <div class="button-row" style="margin-top: 10px;">
+                    <button type="submit">Add watcher(s)</button>
+                </div>
+            </form>
+        </div>
+
+        <div class="section-block" style="margin-top: 12px;">
+            <div class="section-title">
+                <h3>Comments</h3>
+                <p class="subtitle">Latest comments appear first.</p>
+            </div>
+
+            <form method="post" action="{{ url_for('admin_risk_comment_add', risk_id=risk['id']) }}" class="form">
+                <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
+                <label>
+                    Add comment
+                    <textarea name="body" rows="4" placeholder="Write an update, question, or decision note..."></textarea>
+                </label>
+                <div class="button-row" style="margin-top: 10px;">
+                    <button type="submit">Post comment</button>
+                </div>
+            </form>
+
+            {% if comments %}
+                <div class="event-list" style="margin-top: 12px;">
+                    {% for c in comments %}
+                        <div class="event">
+                            <div class="event-meta">
+                                <span class="badge">comment</span>
+                                <span class="event-actor">{{ c['author'] or 'system' }}</span>
+                                <span class="event-time">{{ (c['created_at'] or '')[:19].replace('T', ' ') }}</span>
+                            </div>
+                            <div class="event-body">
+                                <span class="event-diff" style="white-space: pre-wrap;">{{ c['body'] }}</span>
+                            </div>
+                        </div>
+                    {% endfor %}
+                </div>
+            {% else %}
+                <div class="empty">No comments yet.</div>
+            {% endif %}
+        </div>
+    </details>
+
     <script>
         (function () {
             if (window.location.hash !== '#audit-trail') {

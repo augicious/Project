@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="card">
+    <div class="detail-header">
+        <div>
+            <h2>Risk Heatmap</h2>
+            <p class="subtitle">Likelihood × Impact scoring (1–25) using Very Low → Very High.</p>
+        </div>
+        <div class="button-row">
+            <a class="button secondary" href="{{ url_for('admin_dashboard') }}">Back to dashboard</a>
+            <a class="button secondary" href="{{ url_for('admin_trends') }}">Trends</a>
+        </div>
+    </div>
+
+    <div class="dashboard-grid">
+        <div class="section-block">
+            <div class="section-title">
+                <h3>Current banding (Initial)</h3>
+                <p class="subtitle">Based on initial likelihood/impact (falls back to legacy likelihood/impact if initial is blank).</p>
+            </div>
+            <div class="summary-grid">
+                {% for label, count in band_counts_initial.items() %}
+                    <div class="summary-card">
+                        <span class="label">{{ label }}</span>
+                        <strong>{{ count }}</strong>
+                    </div>
+                {% endfor %}
+            </div>
+        </div>
+
+        <div class="section-block">
+            <div class="section-title">
+                <h3>Current banding (Residual)</h3>
+                <p class="subtitle">Based on residual likelihood/impact.</p>
+            </div>
+            <div class="summary-grid">
+                {% for label, count in band_counts_residual.items() %}
+                    <div class="summary-card">
+                        <span class="label">{{ label }}</span>
+                        <strong>{{ count }}</strong>
+                    </div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+
+    <div class="section-block" style="margin-top: 12px;">
+        <div class="section-title">
+            <h3>Heatmap (Initial)</h3>
+            <p class="subtitle">Rows = Likelihood, Columns = Impact. Unscored: {{ initial_unscored }}</p>
+        </div>
+        <div style="overflow:auto;">
+            <table class="table-plain" style="min-width: 520px; width: 100%; border-collapse: collapse;">
+                <thead>
+                    <tr>
+                        <th style="text-align:left; padding: 8px;">Likelihood \ Impact</th>
+                        {% for i in range(1,6) %}
+                            <th style="text-align:center; padding: 8px;">{{ levels[i-1] }}</th>
+                        {% endfor %}
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for l in range(1,6) %}
+                        <tr>
+                            <td style="padding: 8px; font-weight: 700;">{{ levels[l-1] }}</td>
+                            {% for i in range(1,6) %}
+                                {% set c = initial_matrix.get((l,i), 0) %}
+                                <td style="text-align:center; padding: 8px; border-top: 1px solid rgba(255,255,255,0.08);">{{ c }}</td>
+                            {% endfor %}
+                        </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="section-block" style="margin-top: 12px;">
+        <div class="section-title">
+            <h3>Heatmap (Residual)</h3>
+            <p class="subtitle">Rows = Likelihood, Columns = Impact. Unscored: {{ residual_unscored }}</p>
+        </div>
+        <div style="overflow:auto;">
+            <table class="table-plain" style="min-width: 520px; width: 100%; border-collapse: collapse;">
+                <thead>
+                    <tr>
+                        <th style="text-align:left; padding: 8px;">Likelihood \ Impact</th>
+                        {% for i in range(1,6) %}
+                            <th style="text-align:center; padding: 8px;">{{ levels[i-1] }}</th>
+                        {% endfor %}
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for l in range(1,6) %}
+                        <tr>
+                            <td style="padding: 8px; font-weight: 700;">{{ levels[l-1] }}</td>
+                            {% for i in range(1,6) %}
+                                {% set c = residual_matrix.get((l,i), 0) %}
+                                <td style="text-align:center; padding: 8px; border-top: 1px solid rgba(255,255,255,0.08);">{{ c }}</td>
+                            {% endfor %}
+                        </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</section>
+{% endblock %}

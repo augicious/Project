@@ -62,6 +62,15 @@ def _parse_recipients(value: str | None) -> list[str]:
     return [p for p in parts if p]
 
 
+def _normalize_email(value: str | None) -> str:
+    v = (value or "").strip().lower()
+    if not v:
+        return ""
+    if "@" not in v:
+        return ""
+    return v
+
+
 def _send_email(subject: str, html_body: str, to_addrs: list[str]) -> bool:
     """Send an email using SMTP settings from env vars.
 
@@ -606,6 +615,46 @@ def init_db() -> None:
             """
         )
 
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS risk_comments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                risk_id INTEGER NOT NULL,
+                body TEXT NOT NULL,
+                author TEXT,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS risk_watchers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                risk_id INTEGER NOT NULL,
+                email TEXT NOT NULL,
+                created_by TEXT,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS risk_score_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                snapshot_date TEXT NOT NULL,
+                risk_id INTEGER NOT NULL,
+                score_initial INTEGER,
+                level_initial TEXT,
+                score_residual INTEGER,
+                level_residual TEXT,
+                created_by TEXT,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+
         # Lightweight migrations (safe on existing DBs)
         cols = [row[1] for row in conn.execute("PRAGMA table_info(risk_attachments)").fetchall()]
         if "is_archived" not in cols:
@@ -668,6 +717,11 @@ def init_db() -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_risk_tasks_status ON risk_tasks(status)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_risk_tasks_due_date ON risk_tasks(due_date)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_risk_tasks_assigned_to ON risk_tasks(assigned_to)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_risk_comments_risk_id ON risk_comments(risk_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_risk_comments_created_at ON risk_comments(created_at)")
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_risk_watchers_unique ON risk_watchers(risk_id, email)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_risk_score_snapshots_date ON risk_score_snapshots(snapshot_date)")
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_risk_score_snapshots_unique ON risk_score_snapshots(snapshot_date, risk_id)")
         conn.commit()
 
 
@@ -1040,6 +1094,55 @@ def _rating_value(value: str | None) -> int | None:
         return int(float(text))
     except ValueError:
         return None
+
+
+def _rating_1_to_5(value: str | None) -> int | None:
+    """Normalize likelihood/impact labels to a 1-5 scale for heatmaps.
+
+    Accepts text values like: Very Low, Low, Medium, High, Very High.
+    Also accepts numeric strings 1-5.
+    """
+
+    if not value:
+        return None
+    text = str(value).strip().lower()
+    mapping = {
+        "very low": 1,
+        "low": 2,
+        "medium": 3,
+        "high": 4,
+        "very high": 5,
+    }
+    if text in mapping:
+        return mapping[text]
+    try:
+        n = int(float(text))
+    except ValueError:
+        return None
+    if 1 <= n <= 5:
+        return n
+    return None
+
+
+def _score_1_to_25(likelihood_1_5: int | None, impact_1_5: int | None) -> int | None:
+    if likelihood_1_5 is None or impact_1_5 is None:
+        return None
+    return int(likelihood_1_5) * int(impact_1_5)
+
+
+def _score_band(score_1_25: int | None) -> str:
+    """Simple default banding for a 1-25 likelihood×impact score."""
+
+    if score_1_25 is None:
+        return "Unscored"
+    s = int(score_1_25)
+    if s <= 4:
+        return "Low"
+    if s <= 9:
+        return "Medium"
+    if s <= 16:
+        return "High"
+    return "Critical"
 
 
 def _parse_date(value: str | None) -> datetime | None:
@@ -2446,6 +2549,158 @@ def admin_tasks():
     )
 
 
+@app.route("/admin/heatmap")
+def admin_heatmap():
+    if not require_admin():
+        return redirect(url_for("admin"))
+
+    levels = ["Very Low", "Low", "Medium", "High", "Very High"]
+
+    def to_level(v: str | None) -> int | None:
+        return _rating_1_to_5(v)
+
+    def bump(matrix: dict[tuple[int, int], int], like: int | None, imp: int | None) -> None:
+        if like is None or imp is None:
+            return
+        matrix[(like, imp)] = matrix.get((like, imp), 0) + 1
+
+    initial_matrix: dict[tuple[int, int], int] = {}
+    residual_matrix: dict[tuple[int, int], int] = {}
+    initial_unscored = 0
+    residual_unscored = 0
+
+    band_counts_initial: dict[str, int] = {"Low": 0, "Medium": 0, "High": 0, "Critical": 0, "Unscored": 0}
+    band_counts_residual: dict[str, int] = {"Low": 0, "Medium": 0, "High": 0, "Critical": 0, "Unscored": 0}
+
+    with get_db_connection() as conn:
+        risks = conn.execute(
+            """
+            SELECT id, title, likelihood_initial, impact_initial, likelihood_residual, impact_residual, likelihood, impact
+            FROM risks
+            ORDER BY updated_at DESC
+            """.strip()
+        ).fetchall()
+
+    for r in risks:
+        li = to_level(r["likelihood_initial"] or r["likelihood"])
+        ii = to_level(r["impact_initial"] or r["impact"])
+        lr = to_level(r["likelihood_residual"])
+        ir = to_level(r["impact_residual"])
+
+        if li is None or ii is None:
+            initial_unscored += 1
+        bump(initial_matrix, li, ii)
+        band_counts_initial[_score_band(_score_1_to_25(li, ii))] += 1
+
+        if lr is None or ir is None:
+            residual_unscored += 1
+        bump(residual_matrix, lr, ir)
+        band_counts_residual[_score_band(_score_1_to_25(lr, ir))] += 1
+
+    return render_template(
+        "admin_heatmap.html",
+        levels=levels,
+        initial_matrix=initial_matrix,
+        residual_matrix=residual_matrix,
+        initial_unscored=initial_unscored,
+        residual_unscored=residual_unscored,
+        band_counts_initial=band_counts_initial,
+        band_counts_residual=band_counts_residual,
+    )
+
+
+@app.route("/admin/trends")
+def admin_trends():
+    if not require_admin():
+        return redirect(url_for("admin"))
+
+    with get_db_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                snapshot_date,
+                COUNT(*) as total,
+                SUM(CASE WHEN level_initial IN ('High','Critical') THEN 1 ELSE 0 END) as hi_init,
+                SUM(CASE WHEN level_residual IN ('High','Critical') THEN 1 ELSE 0 END) as hi_res,
+                SUM(CASE WHEN level_initial = 'Critical' THEN 1 ELSE 0 END) as crit_init,
+                SUM(CASE WHEN level_residual = 'Critical' THEN 1 ELSE 0 END) as crit_res
+            FROM risk_score_snapshots
+            GROUP BY snapshot_date
+            ORDER BY snapshot_date DESC
+            LIMIT 60
+            """.strip()
+        ).fetchall()
+
+        latest = conn.execute(
+            "SELECT MAX(snapshot_date) as latest_date FROM risk_score_snapshots"
+        ).fetchone()
+        latest_date = (latest["latest_date"] if latest else None) or ""
+
+    return render_template(
+        "admin_trends.html",
+        rows=rows,
+        latest_date=latest_date,
+        today=_today_ymd(),
+    )
+
+
+@app.route("/admin/trends/snapshot", methods=["POST"])
+def admin_trends_snapshot():
+    if not require_admin():
+        return redirect(url_for("admin"))
+
+    actor = _current_actor()
+    now = datetime.utcnow().isoformat()
+    snap_date = _today_ymd()
+
+    inserted = 0
+    with get_db_connection() as conn:
+        risks = conn.execute(
+            """
+            SELECT id, likelihood_initial, impact_initial, likelihood_residual, impact_residual, likelihood, impact
+            FROM risks
+            """.strip()
+        ).fetchall()
+
+        for r in risks:
+            rid = int(r["id"])
+            li = _rating_1_to_5(r["likelihood_initial"] or r["likelihood"])
+            ii = _rating_1_to_5(r["impact_initial"] or r["impact"])
+            lr = _rating_1_to_5(r["likelihood_residual"])
+            ir = _rating_1_to_5(r["impact_residual"])
+
+            score_i = _score_1_to_25(li, ii)
+            score_r = _score_1_to_25(lr, ir)
+            if score_i is None and score_r is None:
+                continue
+
+            cur = conn.execute(
+                """
+                INSERT OR REPLACE INTO risk_score_snapshots
+                    (snapshot_date, risk_id, score_initial, level_initial, score_residual, level_residual, created_by, created_at)
+                VALUES
+                    (?, ?, ?, ?, ?, ?, ?, ?)
+                """.strip(),
+                (
+                    snap_date,
+                    rid,
+                    score_i,
+                    _score_band(score_i),
+                    score_r,
+                    _score_band(score_r),
+                    actor,
+                    now,
+                ),
+            )
+            if int(cur.rowcount or 0) > 0:
+                inserted += 1
+
+        conn.commit()
+
+    flash(f"Snapshot captured for {inserted} risk(s) on {snap_date}.", "success")
+    return redirect(url_for("admin_trends"))
+
+
 def _send_task_reminders(*, days_ahead: int = 3) -> tuple[int, int]:
     """Send reminder emails for tasks due within the next N days (including overdue).
 
@@ -2692,6 +2947,192 @@ def admin_task_delete(task_id: int):
 
     flash("Task deleted.", "success")
     return redirect(request.referrer or url_for("admin_tasks"))
+
+
+@app.route("/admin/risk/<int:risk_id>/watchers/add", methods=["POST"])
+def admin_risk_watchers_add(risk_id: int):
+    if not require_admin():
+        return redirect(url_for("admin"))
+
+    emails_raw = (request.form.get("email") or request.form.get("emails") or "").strip()
+    emails = [_normalize_email(e) for e in _parse_recipients(emails_raw)]
+    emails = [e for e in emails if e]
+    if not emails:
+        flash("Enter at least one valid email address.", "warning")
+        return redirect(url_for("admin_risk_detail", risk_id=risk_id) + "#comments")
+
+    actor = _current_actor()
+    now = datetime.utcnow().isoformat()
+    added = 0
+
+    with get_db_connection() as conn:
+        exists = conn.execute("SELECT 1 FROM risks WHERE id = ?", (risk_id,)).fetchone()
+        if not exists:
+            flash("Risk not found.", "warning")
+            return redirect(url_for("admin_dashboard"))
+
+        for email in emails:
+            cur = conn.execute(
+                """
+                INSERT OR IGNORE INTO risk_watchers (risk_id, email, created_by, created_at)
+                VALUES (?, ?, ?, ?)
+                """.strip(),
+                (risk_id, email, actor, now),
+            )
+            if int(cur.rowcount or 0) > 0:
+                added += 1
+
+        if added:
+            _log_event(
+                conn,
+                risk_id=risk_id,
+                event_type="watchers_add",
+                field="watchers",
+                old_value="",
+                new_value=",".join(emails)[:500],
+                actor=actor,
+            )
+
+        conn.execute(
+            "UPDATE risks SET updated_by = ?, updated_at = ? WHERE id = ?",
+            (actor, now, risk_id),
+        )
+        conn.commit()
+
+    if added:
+        flash(f"Added {added} watcher(s).", "success")
+    else:
+        flash("No new watchers were added (already subscribed).", "info")
+    return redirect(url_for("admin_risk_detail", risk_id=risk_id) + "#comments")
+
+
+@app.route("/admin/risk/<int:risk_id>/watchers/<int:watcher_id>/remove", methods=["POST"])
+def admin_risk_watchers_remove(risk_id: int, watcher_id: int):
+    if not require_admin():
+        return redirect(url_for("admin"))
+
+    actor = _current_actor()
+    now = datetime.utcnow().isoformat()
+
+    with get_db_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM risk_watchers WHERE id = ? AND risk_id = ?",
+            (watcher_id, risk_id),
+        ).fetchone()
+        if row is None:
+            flash("Watcher not found.", "warning")
+            return redirect(url_for("admin_risk_detail", risk_id=risk_id) + "#comments")
+
+        email = (row["email"] or "").strip()
+        conn.execute("DELETE FROM risk_watchers WHERE id = ?", (watcher_id,))
+        _log_event(
+            conn,
+            risk_id=risk_id,
+            event_type="watchers_remove",
+            field="watchers",
+            old_value=email[:500],
+            new_value="",
+            actor=actor,
+        )
+        conn.execute(
+            "UPDATE risks SET updated_by = ?, updated_at = ? WHERE id = ?",
+            (actor, now, risk_id),
+        )
+        conn.commit()
+
+    flash("Watcher removed.", "success")
+    return redirect(url_for("admin_risk_detail", risk_id=risk_id) + "#comments")
+
+
+@app.route("/admin/risk/<int:risk_id>/comments/add", methods=["POST"])
+def admin_risk_comment_add(risk_id: int):
+    if not require_admin():
+        return redirect(url_for("admin"))
+
+    body = (request.form.get("body") or "").strip()
+    if not body:
+        flash("Comment cannot be empty.", "warning")
+        return redirect(url_for("admin_risk_detail", risk_id=risk_id) + "#comments")
+
+    actor = _current_actor()
+    now = datetime.utcnow().isoformat()
+
+    with get_db_connection() as conn:
+        risk = conn.execute("SELECT * FROM risks WHERE id = ?", (risk_id,)).fetchone()
+        if risk is None:
+            flash("Risk not found.", "warning")
+            return redirect(url_for("admin_dashboard"))
+
+        cur = conn.execute(
+            """
+            INSERT INTO risk_comments (risk_id, body, author, created_at)
+            VALUES (?, ?, ?, ?)
+            """.strip(),
+            (risk_id, body, actor, now),
+        )
+        comment_id = int(cur.lastrowid)
+
+        _log_event(
+            conn,
+            risk_id=risk_id,
+            event_type="comment",
+            field="comment",
+            old_value="",
+            new_value=(body.replace("\n", " ")[:500]),
+            actor=actor,
+        )
+
+        conn.execute(
+            "UPDATE risks SET updated_by = ?, updated_at = ? WHERE id = ?",
+            (actor, now, risk_id),
+        )
+
+        # Notify watchers
+        if _env_bool("NOTIFY_COMMENTS_ENABLED", True):
+            watcher_rows = conn.execute(
+                "SELECT email FROM risk_watchers WHERE risk_id = ? ORDER BY LOWER(email)",
+                (risk_id,),
+            ).fetchall()
+            to_addrs = []
+            actor_email = _normalize_email(actor)
+            for wr in watcher_rows:
+                addr = _normalize_email(wr["email"])
+                if not addr:
+                    continue
+                if actor_email and addr == actor_email:
+                    continue
+                to_addrs.append(addr)
+
+            if to_addrs:
+                base_url = os.getenv("APP_BASE_URL", "").strip() or request.url_root.rstrip("/")
+                link = f"{base_url}{url_for('admin_risk_detail', risk_id=risk_id)}#comments"
+                title = (risk["title"] or "Risk")
+                html = (
+                    f"<p><strong>New comment</strong> on risk <strong>{title}</strong></p>"
+                    f"<p><strong>Author:</strong> {actor}</p>"
+                    f"<p style=\"white-space:pre-wrap\">{body}</p>"
+                    f"<p><a href=\"{link}\">Open risk</a></p>"
+                )
+                sent = _send_email(
+                    subject=f"Risk Comment: {title}",
+                    html_body=html,
+                    to_addrs=sorted(set(to_addrs)),
+                )
+                if sent:
+                    _log_event(
+                        conn,
+                        risk_id=risk_id,
+                        event_type="notify",
+                        field="comment_watchers",
+                        old_value=str(comment_id),
+                        new_value=",".join(sorted(set(to_addrs)))[:500],
+                        actor=actor,
+                    )
+
+        conn.commit()
+
+    flash("Comment added.", "success")
+    return redirect(url_for("admin_risk_detail", risk_id=risk_id) + "#comments")
 
 
 @app.route("/admin/bulk_update", methods=["POST"])
@@ -3097,6 +3538,26 @@ def admin_risk_detail(risk_id: int):
             (risk_id,),
         ).fetchall()
 
+        watchers = conn.execute(
+            """
+            SELECT *
+            FROM risk_watchers
+            WHERE risk_id = ?
+            ORDER BY LOWER(email) ASC
+            """.strip(),
+            (risk_id,),
+        ).fetchall()
+
+        comments = conn.execute(
+            """
+            SELECT *
+            FROM risk_comments
+            WHERE risk_id = ?
+            ORDER BY id DESC
+            """.strip(),
+            (risk_id,),
+        ).fetchall()
+
         assignees = [
             row["assigned_to"]
             for row in conn.execute(
@@ -3300,6 +3761,8 @@ def admin_risk_detail(risk_id: int):
         events_pagination=events_pagination,
         attachments=attachments,
         tasks=tasks,
+        watchers=watchers,
+        comments=comments,
         severity_options=SEVERITY_OPTIONS,
         assignees=sorted(set(assignees)),
         owners=sorted(set(owners)),

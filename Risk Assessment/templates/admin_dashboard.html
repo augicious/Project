@@ -19,6 +19,8 @@
             </form>
             <a class="button secondary" href="{{ url_for('admin_export', status=status_filter, severity=severity_filter, assigned=assignee_filter, q=query_text) }}">Exports</a>
             <a class="button secondary" href="{{ url_for('admin_tasks') }}">Tasks</a>
+            <a class="button secondary" href="{{ url_for('admin_heatmap') }}">Heatmap</a>
+            <a class="button secondary" href="{{ url_for('admin_trends') }}">Trends</a>
             <a class="button" href="{{ url_for('logout') }}">Sign out</a>
         </div>
     </div>
