@@ -26,7 +26,7 @@
             </label>
             <label>
                 Assigned To
-                <input type="text" name="assigned_to" value="{{ risk['assigned_to'] or '' }}" placeholder="name@hdh.org" inputmode="email" autocomplete="email" list="assignee-options" />
+                <input type="email" name="assigned_to" value="{{ risk['assigned_to'] or '' }}" placeholder="name@hdh.org" inputmode="email" autocomplete="email" list="assignee-options" />
             </label>
         </div>
         <label>
@@ -211,7 +211,7 @@
                     </label>
                     <label>
                         Assigned To
-                        <input type="text" name="assigned_to" placeholder="Optional" list="assignee-options" />
+                        <input type="email" name="assigned_to" placeholder="Optional" autocomplete="email" inputmode="email" list="assignee-options" />
                     </label>
                     <label>
                         Due Date

@@ -108,3 +108,29 @@ Graph permissions:
   - `OIDC_SCOPES=openid profile email User.Read GroupMember.Read.All`
 
 If you prefer the ID token `groups` claim (no Graph call), configure the app registration to emit group IDs and set `ADMIN_ENTRA_GROUP_IDS` accordingly.
+
+## 6) Restricting “Assigned To” (Optional)
+
+To prevent typos when assigning risks/tasks, the app can restrict `assigned_to` to a known list.
+
+Priority order for the allowlist:
+1) `ASSIGNEE_ALLOWLIST` (recommended if you want explicit control)
+2) Entra group members (Risk Management by default)
+
+Environment variables:
+- `ASSIGNEE_ALLOWLIST` = comma/semicolon-separated emails
+- `ASSIGNEE_ENTRA_GROUPS` = comma-separated Entra group display names (default: `Risk Management`)
+- `ASSIGNEE_ENTRA_GROUP_IDS` = comma-separated Entra group GUIDs (preferred, avoids name lookup)
+- `ASSIGNEE_CACHE_SECONDS` = cache TTL for the allowlist (default: `300`)
+
+Graph permissions (for Entra group member enumeration):
+- Application permissions (admin consent required):
+  - `GroupMember.Read.All` (required to enumerate group members)
+  - `User.Read.All` (recommended so Graph can return `mail` / `userPrincipalName` reliably)
+  - If you use `ASSIGNEE_ENTRA_GROUPS` (name lookup), also add `Group.Read.All` (or `Directory.Read.All`).
+- The app uses client credentials with `OIDC_TENANT_ID` / `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET` and requests `https://graph.microsoft.com/.default`.
+- After adding permissions, you must click **Grant admin consent** in Entra; otherwise Graph calls will return 403 `Authorization_RequestDenied`.
+
+Optional (delegated) approach:
+- If you prefer to populate the assignee list using the signed-in admin’s delegated token (instead of app-only), include `GroupMember.Read.All` in `OIDC_SCOPES` and grant admin consent.
+

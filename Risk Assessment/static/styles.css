@@ -491,7 +491,8 @@ button:disabled,
 
 .table-row {
     display: grid;
-    grid-template-columns: 2.2fr 1fr 1fr 0.7fr 1fr 1fr 1fr;
+    /* Use minmax(0, …) so long content can't force columns to resize per-row */
+    grid-template-columns: minmax(0, 2.2fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 0.7fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr);
     gap: 12px;
     padding: 14px 16px;
     border-radius: 10px;
@@ -505,6 +506,11 @@ button:disabled,
     /* Hint: these lists can be long; let the browser skip offscreen rendering when supported */
     content-visibility: auto;
     contain-intrinsic-size: 56px;
+}
+
+/* Critical for consistent column alignment across rows: allow grid items to shrink */
+.table-row > * {
+    min-width: 0;
 }
 
 .table-row.table-header {
@@ -521,11 +527,11 @@ button:disabled,
 }
 
 .table-row.risk-list {
-    grid-template-columns: 2.2fr 0.9fr 1fr 1fr 0.7fr 1fr 1fr 1fr;
+    grid-template-columns: minmax(0, 2.2fr) minmax(0, 0.9fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 0.7fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr);
 }
 
 .table-row.admin-list {
-    grid-template-columns: 44px 2.2fr 0.9fr 1fr 1.2fr 1fr 0.7fr 1fr 1fr 1fr;
+    grid-template-columns: 44px minmax(0, 2.2fr) minmax(0, 0.9fr) minmax(0, 1fr) minmax(0, 1.2fr) minmax(0, 1fr) minmax(0, 0.7fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr);
 }
 
 /* Make columns easier to distinguish: vertical separators + subtle alternating column panels */
@@ -533,6 +539,9 @@ button:disabled,
 .table-row.risk-list > div {
     padding: 6px 8px;
     border-radius: 8px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .table-row.admin-list > div:nth-child(even),

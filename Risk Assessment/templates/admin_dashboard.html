@@ -8,7 +8,7 @@
             <p class="subtitle">Review and update submitted risks.</p>
         </div>
         <div class="button-row">
-            <form method="post" action="{{ url_for('admin_import') }}">
+            <form method="post" action="/admin/import">
                 <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
                 <button type="submit">Import Risk Register</button>
             </form>
@@ -154,7 +154,7 @@
             </label>
             <label>
                 Bulk Assignee
-                <input type="text" name="bulk_assigned_to" placeholder="name@hdh.org" list="assignee-options" />
+                <input type="email" name="bulk_assigned_to" placeholder="name@hdh.org" autocomplete="email" inputmode="email" list="assignee-options" />
             </label>
             <label class="bulk-inline">
                 <span>Clear assignee</span>
@@ -205,8 +205,8 @@
                 <div>
                     <span class="badge status">{{ risk['status'] }}</span>
                 </div>
-                <div>{{ risk['assigned_to'] or '—' }}</div>
-                <div>{{ risk['owner'] or 'Unassigned' }}</div>
+                <div title="{{ risk['assigned_to'] or '' }}">{{ risk['assigned_to'] or '—' }}</div>
+                <div title="{{ risk['owner'] or '' }}">{{ risk['owner'] or 'Unassigned' }}</div>
                 <div>{{ risk['priority'] or '—' }}</div>
                 <div>
                     <progress class="progress" value="{{ risk['progress'] or 0 }}" max="100"></progress>

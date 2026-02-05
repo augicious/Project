@@ -7,6 +7,7 @@ import io
 import uuid
 import smtplib
 import secrets
+import time
 from datetime import datetime
 from functools import wraps
 from pathlib import Path
@@ -66,9 +67,17 @@ def _normalize_email(value: str | None) -> str:
     v = (value or "").strip().lower()
     if not v:
         return ""
-    if "@" not in v:
+    # Accept common forms like:
+    #   - user@domain
+    #   - Display Name <user@domain>
+    #   - user@domain; other@domain
+    # Extract the first email-looking substring.
+    import re
+
+    m = re.search(r"[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}", v, flags=re.IGNORECASE)
+    if not m:
         return ""
-    return v
+    return m.group(0).strip().lower()
 
 
 def _send_email(subject: str, html_body: str, to_addrs: list[str]) -> bool:
@@ -123,6 +132,20 @@ def _send_email(subject: str, html_body: str, to_addrs: list[str]) -> bool:
         return False
 
 
+def _unique_emails(values: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for v in values:
+        addr = _normalize_email(v)
+        if not addr:
+            continue
+        if addr in seen:
+            continue
+        seen.add(addr)
+        out.append(addr)
+    return out
+
+
 def _current_actor() -> str:
     user = session.get("user") or {}
     actor = (user.get("preferred_username") or user.get("name") or "").strip()
@@ -131,6 +154,63 @@ def _current_actor() -> str:
     if session.get("is_admin"):
         return "admin"
     return "system"
+
+
+def _current_user_email() -> str:
+    """Best-effort current user email for "assigned=me" style filters.
+
+    When OIDC is enabled, this comes from the OIDC session user.
+    When admin-password mode is used without OIDC/AUTH_REQUIRED, allow a stored
+    email (set during admin login) so "My queue" can still function.
+    """
+
+    user = session.get("user") or {}
+    candidates = [
+        (user or {}).get("preferred_username"),
+        (user or {}).get("email"),
+        session.get("admin_user_email"),
+        # Common reverse-proxy identity headers (optional)
+        request.headers.get("X-MS-CLIENT-PRINCIPAL-NAME"),
+        request.headers.get("X-Forwarded-User"),
+        request.headers.get("X-Remote-User"),
+        request.environ.get("REMOTE_USER"),
+    ]
+    for c in candidates:
+        email = _normalize_email(str(c) if c is not None else "")
+        if email:
+            return email
+    return ""
+
+
+def _assignee_me_condition(current_user_email: str) -> tuple[str, list[str]]:
+    """Return a SQL condition + params that match "assigned_to" for the current user.
+
+    This is intentionally tolerant:
+    - Matches exact values (case-insensitive) for name / local-part.
+    - Also matches email embedded in a larger string (e.g. "Name <email>").
+    """
+
+    clauses: list[str] = []
+    params: list[str] = []
+
+    email = _normalize_email(current_user_email)
+    if email:
+        clauses.append("LOWER(COALESCE(assigned_to,'')) LIKE ?")
+        params.append(f"%{email}%")
+
+        local = (email.split("@", 1)[0] or "").strip().lower()
+        if local:
+            clauses.append("LOWER(TRIM(COALESCE(assigned_to,''))) = ?")
+            params.append(local)
+
+    display_name = str((session.get("user") or {}).get("name") or "").strip().lower()
+    if display_name:
+        clauses.append("LOWER(TRIM(COALESCE(assigned_to,''))) = ?")
+        params.append(display_name)
+
+    if not clauses:
+        return "", []
+    return "(" + " OR ".join(clauses) + ")", params
 
 
 def _load_dotenv_if_available() -> None:
@@ -344,6 +424,327 @@ def _graph_get_member_of_group_names(access_token: str) -> list[str]:
     return out
 
 
+_ASSIGNEE_CACHE: dict[str, object] = {
+    "expires": 0.0,
+    "emails": [],
+    "source": "",
+}
+
+
+def _assignee_cache_db_read() -> tuple[list[str], str, float]:
+    """Read allowlist cache from SQLite for multi-process stability."""
+
+    try:
+        with get_db_connection() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS app_cache (
+                    cache_key TEXT PRIMARY KEY,
+                    cache_value TEXT NOT NULL,
+                    expires_epoch REAL NOT NULL,
+                    updated_epoch REAL NOT NULL
+                )
+                """
+            )
+            row = conn.execute(
+                "SELECT cache_value, expires_epoch FROM app_cache WHERE cache_key = ?",
+                ("assignee_allowlist",),
+            ).fetchone()
+            if not row:
+                return [], "", 0.0
+
+            cache_value = str(row["cache_value"] or "")
+            try:
+                expires = float(row["expires_epoch"] or 0.0)
+            except Exception:
+                expires = 0.0
+
+            import json
+
+            payload = json.loads(cache_value) if cache_value else {}
+            if not isinstance(payload, dict):
+                return [], "", expires
+            emails = payload.get("emails")
+            source = str(payload.get("source") or "")
+            if not isinstance(emails, list):
+                return [], source, expires
+            return [str(x) for x in emails], source, expires
+    except Exception:
+        return [], "", 0.0
+
+
+def _assignee_cache_db_write(*, emails: list[str], source: str, expires_epoch: float) -> None:
+    """Persist allowlist cache to SQLite. Best-effort."""
+
+    if not emails:
+        return
+    try:
+        import json
+
+        payload = json.dumps({"emails": emails, "source": source}, separators=(",", ":"))
+        now = time.time()
+        with get_db_connection() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS app_cache (
+                    cache_key TEXT PRIMARY KEY,
+                    cache_value TEXT NOT NULL,
+                    expires_epoch REAL NOT NULL,
+                    updated_epoch REAL NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO app_cache(cache_key, cache_value, expires_epoch, updated_epoch)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(cache_key) DO UPDATE SET
+                    cache_value=excluded.cache_value,
+                    expires_epoch=excluded.expires_epoch,
+                    updated_epoch=excluded.updated_epoch
+                """,
+                ("assignee_allowlist", payload, float(expires_epoch), float(now)),
+            )
+            conn.commit()
+    except Exception:
+        return
+
+
+def _graph_app_token() -> str:
+    """Get an app-only Microsoft Graph token (client credentials).
+
+    Requires:
+      - OIDC_TENANT_ID
+      - OIDC_CLIENT_ID
+      - OIDC_CLIENT_SECRET
+
+    And Graph application permissions with admin consent to enumerate group members.
+    """
+
+    tenant = str(app.config.get("OIDC_TENANT_ID") or "").strip()
+    client_id = str(app.config.get("OIDC_CLIENT_ID") or "").strip()
+    client_secret = str(app.config.get("OIDC_CLIENT_SECRET") or "").strip()
+    if not (tenant and client_id and client_secret):
+        return ""
+
+    token_url = f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token"
+    data = {
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "grant_type": "client_credentials",
+        "scope": "https://graph.microsoft.com/.default",
+    }
+
+    try:
+        resp = requests.post(token_url, data=data, timeout=10)
+        if resp.status_code != 200:
+            return ""
+        payload = resp.json() or {}
+        return str(payload.get("access_token") or "").strip()
+    except Exception:
+        return ""
+
+
+def _graph_group_ids_by_names(*, access_token: str, display_names: list[str]) -> list[str]:
+    if not access_token:
+        return []
+    names = [str(n or "").strip() for n in display_names if str(n or "").strip()]
+    if not names:
+        return []
+
+    headers = {"Authorization": f"Bearer {access_token}"}
+    out: list[str] = []
+    seen: set[str] = set()
+    for name in names:
+        # Filter requires single quotes; escape per OData rules.
+        safe = name.replace("'", "''")
+        try:
+            resp = requests.get(
+                "https://graph.microsoft.com/v1.0/groups",
+                headers=headers,
+                params={
+                    "$select": "id,displayName",
+                    "$filter": f"displayName eq '{safe}'",
+                    "$top": "50",
+                },
+                timeout=10,
+            )
+            if resp.status_code != 200:
+                continue
+            data = resp.json() or {}
+            for item in (data.get("value") or []):
+                gid = str((item or {}).get("id") or "").strip()
+                if gid and gid.lower() not in seen:
+                    seen.add(gid.lower())
+                    out.append(gid)
+        except Exception:
+            continue
+    return out
+
+
+def _graph_group_member_emails(*, access_token: str, group_id: str) -> list[str]:
+    if not access_token or not group_id:
+        return []
+
+    headers = {"Authorization": f"Bearer {access_token}"}
+    base = "https://graph.microsoft.com/v1.0/groups/" + str(group_id).strip()
+    # Prefer transitiveMembers (includes nested groups). Some tenants restrict this; fall back to /members.
+    url = base + "/transitiveMembers/microsoft.graph.user" + "?$select=mail,userPrincipalName,displayName&$top=999"
+    emails: list[str] = []
+
+    tried_fallback = False
+
+    for _ in range(25):
+        try:
+            resp = requests.get(url, headers=headers, timeout=15)
+            if resp.status_code != 200:
+                if (not tried_fallback) and "/transitiveMembers/" in url:
+                    tried_fallback = True
+                    url = base + "/members/microsoft.graph.user" + "?$select=mail,userPrincipalName,displayName&$top=999"
+                    continue
+                break
+            data = resp.json() or {}
+            for item in (data.get("value") or []):
+                mail = (item or {}).get("mail")
+                upn = (item or {}).get("userPrincipalName")
+                addr = _normalize_email(str(mail or upn or ""))
+                if addr:
+                    emails.append(addr)
+            next_link = data.get("@odata.nextLink")
+            if not next_link:
+                break
+            url = str(next_link)
+        except Exception:
+            break
+
+    return _unique_emails(emails)
+
+
+def _allowed_assignee_emails(*, force_refresh: bool = False) -> tuple[list[str], str]:
+    """Assignee allowlist (normalized emails).
+
+    Sources (first that produces entries wins):
+      1) ASSIGNEE_ALLOWLIST (CSV/semicolon)
+      2) Entra group members via Graph app-only token:
+         - ASSIGNEE_ENTRA_GROUP_IDS (CSV of GUIDs)
+         - or ASSIGNEE_ENTRA_GROUPS (CSV of display names; default: Risk Management)
+    """
+
+    try:
+        ttl = int(float(os.getenv("ASSIGNEE_CACHE_SECONDS", "300")))
+    except ValueError:
+        ttl = 300
+    ttl = max(30, min(ttl, 60 * 60))
+    try:
+        stale_ttl = int(float(os.getenv("ASSIGNEE_STALE_SECONDS", str(ttl))))
+    except ValueError:
+        stale_ttl = ttl
+    stale_ttl = max(30, min(stale_ttl, 60 * 60))
+
+    now = time.time()
+
+    # Snapshot current cache (may be used as last-known-good).
+    existing_emails: list[str] = []
+    existing_source = ""
+    existing_expires = 0.0
+    try:
+        existing_expires = float(_ASSIGNEE_CACHE.get("expires") or 0.0)
+    except Exception:
+        existing_expires = 0.0
+    cached = _ASSIGNEE_CACHE.get("emails") or []
+    if isinstance(cached, list):
+        existing_emails = [str(x) for x in cached if str(x).strip()]
+    existing_source = str(_ASSIGNEE_CACHE.get("source") or "")
+
+    if (not force_refresh) and existing_expires and now < existing_expires and existing_emails:
+        return existing_emails, existing_source
+
+    # If in-memory cache is missing/expired, try DB-backed cache (helps with multi-process deployments).
+    if (not force_refresh) and (not existing_emails or not existing_expires or now >= existing_expires):
+        db_emails, db_source, db_expires = _assignee_cache_db_read()
+        if db_emails and db_expires and now < db_expires:
+            _ASSIGNEE_CACHE["expires"] = db_expires
+            _ASSIGNEE_CACHE["emails"] = db_emails
+            _ASSIGNEE_CACHE["source"] = db_source
+            return db_emails, db_source
+
+    env_list = os.getenv("ASSIGNEE_ALLOWLIST", "").strip()
+    if env_list:
+        emails = _unique_emails(_parse_recipients(env_list))
+        expires_epoch = now + ttl
+        _ASSIGNEE_CACHE["expires"] = expires_epoch
+        _ASSIGNEE_CACHE["emails"] = emails
+        _ASSIGNEE_CACHE["source"] = "env:ASSIGNEE_ALLOWLIST"
+        _assignee_cache_db_write(emails=emails, source="env:ASSIGNEE_ALLOWLIST", expires_epoch=expires_epoch)
+        return emails, "env:ASSIGNEE_ALLOWLIST"
+
+    group_ids = _split_csv(os.getenv("ASSIGNEE_ENTRA_GROUP_IDS", ""))
+    group_names = _split_csv(os.getenv("ASSIGNEE_ENTRA_GROUPS", ""))
+    if not group_ids and not group_names:
+        group_names = ["Risk Management"]
+
+    emails: list[str] = []
+    if group_ids or group_names:
+        access_token = _graph_app_token()
+        resolved_ids: list[str] = []
+        resolved_ids.extend([g for g in group_ids if g])
+        if access_token and group_names:
+            resolved_ids.extend(_graph_group_ids_by_names(access_token=access_token, display_names=group_names))
+        if access_token and resolved_ids:
+            for gid in resolved_ids:
+                emails.extend(_graph_group_member_emails(access_token=access_token, group_id=gid))
+        emails = _unique_emails(emails)
+
+    if emails:
+        expires_epoch = now + ttl
+        _ASSIGNEE_CACHE["expires"] = expires_epoch
+        _ASSIGNEE_CACHE["emails"] = emails
+        _ASSIGNEE_CACHE["source"] = "entra"
+        _assignee_cache_db_write(emails=emails, source="entra", expires_epoch=expires_epoch)
+        return emails, "entra"
+
+    # Graph/enumeration returned empty. Do not wipe out a previously-good cache entry.
+    if existing_emails:
+        expires_epoch = now + stale_ttl
+        stale_source = (existing_source or "cached")
+        if "stale" not in stale_source.lower():
+            stale_source = f"{stale_source} (stale)"
+        _ASSIGNEE_CACHE["expires"] = expires_epoch
+        _ASSIGNEE_CACHE["emails"] = existing_emails
+        _ASSIGNEE_CACHE["source"] = stale_source
+        _assignee_cache_db_write(emails=existing_emails, source=stale_source, expires_epoch=expires_epoch)
+        return existing_emails, stale_source
+
+    _ASSIGNEE_CACHE["expires"] = now + ttl
+    _ASSIGNEE_CACHE["emails"] = []
+    _ASSIGNEE_CACHE["source"] = "entra(empty)"
+    return [], "entra(empty)"
+
+
+def _validate_assignee_email(value: str) -> tuple[bool, str]:
+    """Validate & normalize assigned_to.
+
+    - Returns (ok, normalized_email_or_blank)
+    - Enforces allowlist when it is available (non-empty)
+    """
+
+    raw = (value or "").strip()
+    if not raw:
+        return True, ""
+
+    email = _normalize_email(raw)
+    if not email:
+        return False, ""
+
+    allowlist, _src = _allowed_assignee_emails()
+    if allowlist:
+        allowed = {a.strip().lower() for a in allowlist}
+        if email.strip().lower() not in allowed:
+            return False, email
+
+    return True, email
+
+
 def _compute_is_admin_from_entra(*, token: dict, userinfo: dict) -> bool:
     allowed_names = {n.strip().lower() for n in _split_csv(app.config.get("ADMIN_ENTRA_GROUPS", ""))}
     allowed_ids = {n.strip().lower() for n in _split_csv(app.config.get("ADMIN_ENTRA_GROUP_IDS", ""))}
@@ -373,12 +774,40 @@ def is_authenticated() -> bool:
     return bool(session.get("user"))
 
 
+def is_admin() -> bool:
+    """Return True when the current session has admin rights."""
+
+    if session.get("is_admin"):
+        return True
+
+    user = session.get("user")
+    if isinstance(user, dict) and user.get("is_admin"):
+        return True
+
+    return False
+
+
 def require_login() -> bool:
     if not _oauth_enabled() or not app.config.get("AUTH_REQUIRED", True):
         return True
     if is_authenticated():
         return True
     return False
+
+
+def require_admin() -> bool:
+    """Return True when the request is allowed to access admin routes."""
+
+    # When admin-password mode is enabled, a local session flag grants access.
+    if app.config.get("ADMIN_PASSWORD_ENABLED", True) and session.get("is_admin"):
+        return True
+
+    # Otherwise, rely on Entra group-based admin (stored on the OIDC session user).
+    if _oauth_enabled() and app.config.get("AUTH_REQUIRED", True):
+        return is_admin()
+
+    # No auth configured: fall back to session flag only.
+    return bool(session.get("is_admin"))
 
 
 def login_required(view_func):
@@ -463,6 +892,13 @@ def auth_callback():
     except Exception:
         flash("Sign-in failed. Please try again.", "danger")
         return redirect(url_for("index"))
+
+    # Clear any stale/large session payload from older versions or intermediary auth state.
+    # Keep the intended post-login redirect.
+    next_url = session.pop("post_login_redirect", "")
+    session.clear()
+    if next_url:
+        session["post_login_redirect"] = next_url
 
     userinfo = token.get("userinfo")
     if not userinfo:
@@ -1033,169 +1469,89 @@ def seed_from_excel(force: bool = False) -> int:
     return inserted
 
 
-def _import_kpis(workbook) -> None:
-    if "KPI" not in workbook.sheetnames:
-        return
-
-    sheet = workbook["KPI"]
-    rows = list(sheet.iter_rows(values_only=True))
-    if not rows:
-        return
-
-    now = datetime.utcnow().isoformat()
-    with get_db_connection() as conn:
-        conn.execute("DELETE FROM kpis")
-        for row in rows[1:]:
-            if not any(cell is not None and str(cell).strip() for cell in row):
-                continue
-            name = str(row[0]).strip() if row[0] else ""
-            value = str(row[1]).strip() if len(row) > 1 and row[1] is not None else ""
-            notes = str(row[2]).strip() if len(row) > 2 and row[2] is not None else ""
-            if not name:
-                continue
-            conn.execute(
-                """
-                INSERT INTO kpis (name, value, notes, source_sheet, created_at)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (name, value, notes, "KPI", now),
-            )
-        conn.commit()
-
-
-def is_admin() -> bool:
-    if session.get("is_admin", False) is True:
-        return True
-    user = session.get("user") or {}
-    return bool((user or {}).get("is_admin"))
-
-
-def require_admin() -> bool:
-    if not is_admin():
-        flash("Admin access required.", "warning")
-        return False
-    return True
-
-
 def _rating_value(value: str | None) -> int | None:
-    if not value:
+    text = (value or "").strip().lower()
+    if not text:
         return None
-    text = str(value).strip().lower()
-    mapping = {
-        "very low": 0,
-        "low": 1,
-        "medium": 2,
-        "high": 3,
-        "very high": 4,
-    }
-    if text in mapping:
-        return mapping[text]
-    try:
-        return int(float(text))
-    except ValueError:
-        return None
-
-
-def _rating_1_to_5(value: str | None) -> int | None:
-    """Normalize likelihood/impact labels to a 1-5 scale for heatmaps.
-
-    Accepts text values like: Very Low, Low, Medium, High, Very High.
-    Also accepts numeric strings 1-5.
-    """
-
-    if not value:
-        return None
-    text = str(value).strip().lower()
     mapping = {
         "very low": 1,
         "low": 2,
         "medium": 3,
         "high": 4,
         "very high": 5,
+        "critical": 5,
     }
     if text in mapping:
         return mapping[text]
+    # Accept numeric strings.
     try:
         n = int(float(text))
-    except ValueError:
-        return None
-    if 1 <= n <= 5:
-        return n
+        if 0 <= n <= 10:
+            return n
+    except Exception:
+        pass
     return None
 
 
-def _score_1_to_25(likelihood_1_5: int | None, impact_1_5: int | None) -> int | None:
-    if likelihood_1_5 is None or impact_1_5 is None:
-        return None
-    return int(likelihood_1_5) * int(impact_1_5)
-
-
-def _score_band(score_1_25: int | None) -> str:
-    """Simple default banding for a 1-25 likelihood×impact score."""
-
-    if score_1_25 is None:
-        return "Unscored"
-    s = int(score_1_25)
-    if s <= 4:
-        return "Low"
-    if s <= 9:
-        return "Medium"
-    if s <= 16:
-        return "High"
-    return "Critical"
-
-
 def _parse_date(value: str | None) -> datetime | None:
-    if not value:
-        return None
-    text = str(value).strip()
+    """Parse common date formats used in this app (ISO-ish strings)."""
+
+    text = (value or "").strip()
     if not text:
         return None
-    for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y", "%Y/%m/%d"):
-        try:
-            return datetime.strptime(text, fmt)
-        except ValueError:
-            continue
+
+    # Handle YYYY-MM-DD quickly.
     try:
-        return datetime.fromisoformat(text)
-    except ValueError:
+        if len(text) == 10 and text[4] == "-" and text[7] == "-":
+            return datetime.strptime(text, "%Y-%m-%d")
+    except Exception:
+        pass
+
+    # Try ISO formats (with or without Z).
+    try:
+        cleaned = text.replace("Z", "+00:00")
+        return datetime.fromisoformat(cleaned)
+    except Exception:
         return None
 
 
 def _today_ymd() -> str:
-    return datetime.utcnow().date().isoformat()
+    return datetime.utcnow().strftime("%Y-%m-%d")
 
 
-def _parse_ymd(value: str | None) -> str:
-    text = (value or "").strip()
-    if not text:
-        return ""
-    # Accept ISO date prefix; store normalized YYYY-MM-DD
-    return text[:10]
-
-
-def _normalize_task_status(value: str | None) -> str:
-    text = (value or "").strip()
-    if not text:
-        return "Open"
-    for opt in TASK_STATUS_OPTIONS:
-        if opt.lower() == text.lower():
-            return opt
-    return "Open"
-
-
-def _compute_kpi_metrics(risks: list[sqlite3.Row]) -> dict[str, dict[str, str]]:
-    total_risks = len(risks)
+def _compute_kpi_metrics(*, risks: list[sqlite3.Row]) -> dict[str, dict[str, str]]:
     completed_statuses = {"Mitigated", "Archived", "Closed"}
+    total_risks = len(risks)
     completed_count = sum(1 for r in risks if (r["status"] or "").strip() in completed_statuses)
 
-    # Risk exposure (simple, always available)
     metrics: dict[str, dict[str, str]] = {
-        "risk exposure": {
+        "total risks": {
             "value": str(total_risks),
             "notes": "Total risks currently in the system.",
         }
     }
+
+    # Risk exposure: average residual score (likelihood×impact) where ratings exist.
+    scored = 0
+    residual_sum = 0
+    for risk in risks:
+        l = _rating_value(risk["likelihood_residual"])
+        i = _rating_value(risk["impact_residual"])
+        if l is None or i is None:
+            continue
+        scored += 1
+        residual_sum += max(0, l) * max(0, i)
+    if scored:
+        avg = residual_sum / scored
+        metrics["risk exposure"] = {
+            "value": f"{avg:.1f}",
+            "notes": f"Average residual risk score across {scored} risks with ratings.",
+        }
+    else:
+        metrics["risk exposure"] = {
+            "value": "—",
+            "notes": "No residual likelihood/impact ratings available.",
+        }
 
     # Mitigation effectiveness (prefer ratings-based score reduction; fallback to completion rate)
     scored_count = 0
@@ -1277,7 +1633,7 @@ def _compute_kpi_metrics(risks: list[sqlite3.Row]) -> dict[str, dict[str, str]]:
             avg_age = open_days_total / open_days_count
             metrics["risk response timeliness"] = {
                 "value": f"{avg_age:.1f} days",
-                "notes": f"Fallback metric: average age of open risks (no mitigation dates available) across {open_days_count} risks.",
+                "notes": f"Fallback metric: average age of open risks across {open_days_count} risks.",
             }
         else:
             metrics["risk response timeliness"] = {
@@ -1286,6 +1642,47 @@ def _compute_kpi_metrics(risks: list[sqlite3.Row]) -> dict[str, dict[str, str]]:
             }
 
     return metrics
+
+
+def _import_kpis(workbook) -> None:
+    """Import KPI sheet rows into the kpis table (best-effort)."""
+
+    try:
+        sheet_name = next((n for n in workbook.sheetnames if str(n).strip().lower() == "kpi"), "")
+        if not sheet_name:
+            return
+        sheet = workbook[sheet_name]
+        rows = list(sheet.iter_rows(values_only=True))
+        if not rows:
+            return
+
+        now = datetime.utcnow().isoformat()
+        to_insert: list[tuple[str, str, str]] = []
+        for row in rows:
+            if not row:
+                continue
+            name = str(row[0] or "").strip()
+            if not name:
+                continue
+            value = str(row[1] or "").strip() if len(row) > 1 else ""
+            notes = str(row[2] or "").strip() if len(row) > 2 else ""
+            to_insert.append((name, value, notes))
+
+        if not to_insert:
+            return
+
+        with get_db_connection() as conn:
+            for name, value, notes in to_insert:
+                conn.execute(
+                    """
+                    INSERT INTO kpis (name, value, notes, source_sheet, created_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (name, value, notes, sheet_name, now),
+                )
+            conn.commit()
+    except Exception:
+        return
 
 
 def _median(values: list[float]) -> float | None:
@@ -1317,9 +1714,14 @@ def _build_admin_risks_query(
         filters.append("LOWER(TRIM(COALESCE(severity, ''))) = ?")
         params.append(severity_filter.lower())
 
-    if assignee_filter == "me" and current_user:
-        filters.append("LOWER(TRIM(COALESCE(assigned_to, ''))) = ?")
-        params.append(current_user.strip().lower())
+    if assignee_filter == "me":
+        cond_sql, cond_params = _assignee_me_condition(current_user)
+        if cond_sql:
+            filters.append(cond_sql)
+            params.extend(cond_params)
+        else:
+            # If we don't know who "me" is, return no rows.
+            filters.append("1 = 0")
     elif assignee_filter == "unassigned":
         filters.append("TRIM(COALESCE(assigned_to, '')) = ''")
     elif assignee_filter != "all":
@@ -1355,9 +1757,13 @@ def _build_admin_risks_where(
         filters.append("LOWER(TRIM(COALESCE(severity, ''))) = ?")
         params.append(severity_filter.lower())
 
-    if assignee_filter == "me" and current_user:
-        filters.append("LOWER(TRIM(COALESCE(assigned_to, ''))) = ?")
-        params.append(current_user.strip().lower())
+    if assignee_filter == "me":
+        cond_sql, cond_params = _assignee_me_condition(current_user)
+        if cond_sql:
+            filters.append(cond_sql)
+            params.extend(cond_params)
+        else:
+            filters.append("1 = 0")
     elif assignee_filter == "unassigned":
         filters.append("TRIM(COALESCE(assigned_to, '')) = ''")
     elif assignee_filter != "all":
@@ -1397,9 +1803,13 @@ def _build_admin_export_where(
         filters.append("LOWER(TRIM(COALESCE(severity, ''))) = ?")
         params.append(severity_filter.lower())
 
-    if assignee_filter == "me" and current_user:
-        filters.append("LOWER(TRIM(COALESCE(assigned_to, ''))) = ?")
-        params.append(current_user.strip().lower())
+    if assignee_filter == "me":
+        cond_sql, cond_params = _assignee_me_condition(current_user)
+        if cond_sql:
+            filters.append(cond_sql)
+            params.extend(cond_params)
+        else:
+            filters.append("1 = 0")
     elif assignee_filter == "unassigned":
         filters.append("TRIM(COALESCE(assigned_to, '')) = ''")
     elif assignee_filter != "all":
@@ -1966,6 +2376,13 @@ def submit():
         if severity not in SEVERITY_OPTIONS:
             severity = _compute_severity(likelihood_value, impact_value)
 
+        if owner:
+            owner_email = _normalize_email(owner)
+            if not owner_email:
+                flash("Suggested Owner must be an email address (e.g. name@hdh.org).", "warning")
+                return render_template("submit.html")
+            owner = owner_email
+
         actor = _current_actor()
         with get_db_connection() as conn:
             cursor = conn.execute(
@@ -2042,6 +2459,36 @@ def submit():
                             field="email",
                             old_value="",
                             new_value=",".join(notify_to),
+                            actor=actor,
+                        )
+                        conn.commit()
+            except Exception:
+                pass
+
+            # Notifications: suggested owner (if provided)
+            try:
+                owner_email = _normalize_email(owner)
+                if owner_email and _env_bool("NOTIFY_OWNER_ON_SUBMIT_ENABLED", True):
+                    base_url = os.getenv("APP_BASE_URL", "").strip() or request.url_root.rstrip("/")
+                    link = f"{base_url}{url_for('risk_detail', risk_id=risk_id)}"
+                    sent = _send_email(
+                        subject=f"Risk Submitted: {title}",
+                        html_body=(
+                            f"<p>A risk was submitted and you were listed as the suggested owner.</p>"
+                            f"<p><strong>Title:</strong> {title}</p>"
+                            f"<p><strong>Severity:</strong> {severity or 'Unspecified'}</p>"
+                            f"<p><a href=\"{link}\">Open risk</a></p>"
+                        ),
+                        to_addrs=[owner_email],
+                    )
+                    if sent:
+                        _log_event(
+                            conn,
+                            risk_id=risk_id,
+                            event_type="notify",
+                            field="owner_submit",
+                            old_value="",
+                            new_value=owner_email,
                             actor=actor,
                         )
                         conn.commit()
@@ -2217,6 +2664,11 @@ def admin():
         password = request.form.get("password", "")
         if password == app.config["ADMIN_PASSWORD"]:
             session["is_admin"] = True
+            who = _normalize_email(request.form.get("who") or "")
+            if who:
+                session["admin_user_email"] = who
+            else:
+                session.pop("admin_user_email", None)
             flash("Welcome, admin.", "success")
             return redirect(url_for("admin_dashboard"))
         flash("Invalid admin password.", "danger")
@@ -2230,6 +2682,7 @@ def admin():
 @app.route("/admin/logout")
 def admin_logout():
     session.pop("is_admin", None)
+    session.pop("admin_user_email", None)
     flash("Logged out.", "info")
     return redirect(url_for("index"))
 
@@ -2245,7 +2698,7 @@ def admin_dashboard():
     query_text = request.args.get("q", "").strip()
     page, per_page = _parse_pagination(default_per_page=50)
 
-    current_user = str((session.get("user") or {}).get("preferred_username") or "").strip()
+    current_user = _current_user_email()
     where_sql, params = _build_admin_risks_where(
         status_filter=status_filter,
         severity_filter=severity_filter,
@@ -2279,6 +2732,9 @@ def admin_dashboard():
                 "SELECT DISTINCT TRIM(assigned_to) as assigned_to FROM risks WHERE assigned_to IS NOT NULL AND TRIM(assigned_to) <> ''"
             )
         ]
+        allowed_assignees, _assignee_source = _allowed_assignee_emails()
+        if allowed_assignees:
+            assignees = allowed_assignees
         program_kpis = _compute_program_kpis(conn, where_sql=where_sql, params=params)
         summary = conn.execute(
             """
@@ -2346,22 +2802,27 @@ def admin_dashboard():
             ).fetchone()[0]
         )
 
-    open_statuses = {"new", "in review", "in progress", "postponed"}
-    open_status_placeholders = ",".join(["?"] * len(open_statuses))
-    open_params = sorted(open_statuses)
+    # Queue counts should be stable and global (not dependent on the current filter view).
+    queue_where_sql = ""
+    queue_params: list[object] = []
+
+    open_condition = "LOWER(TRIM(COALESCE(status,''))) NOT IN ('closed','archived','mitigated')"
 
     with get_db_connection() as conn:
-        unassigned_where = _where_join(where_sql, "TRIM(COALESCE(assigned_to, '')) = ''")
+        unassigned_where = _where_join(
+            queue_where_sql,
+            f"TRIM(COALESCE(assigned_to, '')) = '' AND {open_condition}",
+        )
         open_count = int(
             conn.execute(
-                f"SELECT COUNT(*) FROM risks{_where_join(where_sql, f'LOWER(TRIM(status)) IN ({open_status_placeholders})')}",
-                params + open_params,
+                f"SELECT COUNT(*) FROM risks{_where_join(queue_where_sql, open_condition)}",
+                queue_params,
             ).fetchone()[0]
         )
         unassigned_count = int(
             conn.execute(
                 f"SELECT COUNT(*) FROM risks{unassigned_where}",
-                params,
+                queue_params,
             ).fetchone()[0]
         )
         high_count = int(
@@ -2370,23 +2831,24 @@ def admin_dashboard():
                 SELECT COUNT(*)
                 FROM risks
                 {_where_join(
-                    where_sql,
-                    f"LOWER(TRIM(COALESCE(severity,''))) IN ('high','critical') AND LOWER(TRIM(status)) IN ({open_status_placeholders})",
+                    queue_where_sql,
+                    f"LOWER(TRIM(COALESCE(severity,''))) IN ('high','critical') AND {open_condition}",
                 )}
                 """.strip(),
-                params + open_params,
+                queue_params,
             ).fetchone()[0]
         )
         my_count = 0
-        if current_user:
+        me_sql, me_params = _assignee_me_condition(current_user)
+        if me_sql:
             my_count = int(
                 conn.execute(
                     f"""
                     SELECT COUNT(*)
                     FROM risks
-                    {_where_join(where_sql, f"LOWER(TRIM(COALESCE(assigned_to,''))) = ? AND LOWER(TRIM(status)) IN ({open_status_placeholders})")}
+                    {_where_join(queue_where_sql, f"{me_sql} AND {open_condition}")}
                     """.strip(),
-                    params + [current_user.strip().lower()] + open_params,
+                    queue_params + me_params,
                 ).fetchone()[0]
             )
 
@@ -2474,7 +2936,7 @@ def admin_tasks():
     due_filter = request.args.get("due", "all").strip().lower()
     query_text = request.args.get("q", "").strip()
 
-    current_user = str((session.get("user") or {}).get("preferred_username") or "").strip()
+    current_user = _current_user_email()
     today = _today_ymd()
 
     filters: list[str] = []
@@ -2814,6 +3276,17 @@ def admin_task_add(risk_id: int):
     if not title:
         flash("Task title is required.", "warning")
         return redirect(url_for("admin_risk_detail", risk_id=risk_id))
+
+    if assigned_to:
+        ok, normalized = _validate_assignee_email(assigned_to)
+        if not ok:
+            allowlist, _src = _allowed_assignee_emails()
+            if normalized and allowlist:
+                flash("Task assignee must be a member of the Risk Management group.", "warning")
+            else:
+                flash("Task assignee must be a valid email address (e.g. name@hdh.org).", "warning")
+            return redirect(url_for("admin_risk_detail", risk_id=risk_id))
+        assigned_to = normalized
 
     actor = _current_actor()
     now = datetime.utcnow().isoformat()
@@ -3160,7 +3633,15 @@ def admin_bulk_update():
     if clear_assigned_to:
         fields_to_update["assigned_to"] = ""
     elif assigned_to:
-        fields_to_update["assigned_to"] = assigned_to
+        ok, normalized = _validate_assignee_email(assigned_to)
+        if not ok:
+            allowlist, _src = _allowed_assignee_emails()
+            if normalized and allowlist:
+                flash("Assignee must be a member of the Risk Management group.", "warning")
+            else:
+                flash("Assignee must be a valid email address (e.g. name@hdh.org).", "warning")
+            return redirect(return_to or url_for("admin_dashboard"))
+        fields_to_update["assigned_to"] = normalized
     if close_reason:
         fields_to_update["close_reason"] = close_reason
 
@@ -3197,7 +3678,7 @@ def admin_bulk_update():
             if risk is None:
                 continue
 
-            old_assignee = (risk["assigned_to"] or "").strip()
+            old_assignee = _normalize_email(risk["assigned_to"])
 
             for field, new_value in fields_to_update.items():
                 old_value = (risk[field] or "") if field in risk.keys() else ""
@@ -3251,21 +3732,27 @@ def admin_bulk_update():
 
             # Notifications: assignment change
             new_assignee = (fields_to_update.get("assigned_to") if "assigned_to" in fields_to_update else old_assignee) or ""
-            new_assignee = str(new_assignee).strip()
-            if new_assignee and new_assignee != old_assignee and "@" in new_assignee:
+            new_assignee = _normalize_email(str(new_assignee))
+            if new_assignee and new_assignee != old_assignee:
                 try:
                     if _env_bool("NOTIFY_ASSIGNMENT_ENABLED", True):
                         link = f"{base_url}{url_for('admin_risk_detail', risk_id=rid)}"
+                        owner_email = _normalize_email(risk["owner"] if "owner" in risk.keys() else "")
+                        to_addrs = _unique_emails([new_assignee, owner_email])
+                        if not to_addrs:
+                            continue
+                        status_for_email = (fields_to_update.get("status") or risk["status"] or "").strip()
+                        severity_for_email = (fields_to_update.get("severity") or risk["severity"] or "").strip()
                         sent = _send_email(
                             subject=f"Risk Assigned: {risk['title']}",
                             html_body=(
                                 f"<p>You have been assigned a risk.</p>"
                                 f"<p><strong>Title:</strong> {risk['title']}</p>"
-                                f"<p><strong>Status:</strong> {risk['status']}</p>"
-                                f"<p><strong>Severity:</strong> {risk['severity'] or 'Unspecified'}</p>"
+                                f"<p><strong>Status:</strong> {status_for_email}</p>"
+                                f"<p><strong>Severity:</strong> {severity_for_email or 'Unspecified'}</p>"
                                 f"<p><a href=\"{link}\">Open risk</a></p>"
                             ),
-                            to_addrs=[new_assignee],
+                            to_addrs=to_addrs,
                         )
                         if sent:
                             _log_event(
@@ -3274,7 +3761,7 @@ def admin_bulk_update():
                                 event_type="notify",
                                 field="email",
                                 old_value="",
-                                new_value=new_assignee,
+                                new_value=",".join(to_addrs)[:500],
                                 actor=actor,
                             )
                 except Exception:
@@ -3300,7 +3787,7 @@ def admin_export_csv():
     date_from = request.args.get("date_from", "").strip()
     date_to = request.args.get("date_to", "").strip()
 
-    current_user = str((session.get("user") or {}).get("preferred_username") or "").strip()
+    current_user = _current_user_email()
     where_sql, params = _build_admin_export_where(
         status_filter=status_filter,
         severity_filter=severity_filter,
@@ -3377,7 +3864,7 @@ def admin_export():
     date_from = request.args.get("date_from", "").strip()
     date_to = request.args.get("date_to", "").strip()
 
-    current_user = str((session.get("user") or {}).get("preferred_username") or "").strip()
+    current_user = _current_user_email()
     where_sql, where_params = _build_admin_export_where(
         status_filter=status_filter,
         severity_filter=severity_filter,
@@ -3564,6 +4051,9 @@ def admin_risk_detail(risk_id: int):
                 "SELECT DISTINCT TRIM(assigned_to) as assigned_to FROM risks WHERE assigned_to IS NOT NULL AND TRIM(assigned_to) <> ''"
             )
         ]
+        allowed_assignees, _assignee_source = _allowed_assignee_emails()
+        if allowed_assignees:
+            assignees = allowed_assignees
         owners = [
             row["owner"]
             for row in conn.execute(
@@ -3623,7 +4113,15 @@ def admin_risk_detail(risk_id: int):
             if severity not in SEVERITY_OPTIONS:
                 severity = _compute_severity(likelihood_value, impact_value)
 
-            assigned_to = (assigned_to or "").strip()
+            ok, assigned_to_norm = _validate_assignee_email(assigned_to)
+            if not ok:
+                allowlist, _src = _allowed_assignee_emails()
+                if assigned_to_norm and allowlist:
+                    flash("Assignee must be a member of the Risk Management group.", "warning")
+                else:
+                    flash("Assignee must be a valid email address (e.g. name@hdh.org).", "warning")
+                return redirect(url_for("admin_risk_detail", risk_id=risk_id))
+            assigned_to = assigned_to_norm
             close_reason = (close_reason or "").strip()
 
             if status.strip() == "Closed" and not close_reason:
@@ -3659,24 +4157,28 @@ def admin_risk_detail(risk_id: int):
                     )
 
             # Notifications: assignment change
-            old_assignee = _as_str(risk["assigned_to"])
-            new_assignee = _as_str(assigned_to)
-            if new_assignee and new_assignee != old_assignee and "@" in new_assignee:
+            old_assignee = _normalize_email(_as_str(risk["assigned_to"]))
+            new_assignee = _normalize_email(_as_str(assigned_to))
+            if new_assignee and new_assignee != old_assignee:
                 try:
                     if _env_bool("NOTIFY_ASSIGNMENT_ENABLED", True):
                         base_url = os.getenv("APP_BASE_URL", "").strip() or request.url_root.rstrip("/")
                         link = f"{base_url}{url_for('admin_risk_detail', risk_id=risk_id)}"
-                        sent = _send_email(
-                            subject=f"Risk Assigned: {risk['title']}",
-                            html_body=(
-                                f"<p>You have been assigned a risk.</p>"
-                                f"<p><strong>Title:</strong> {risk['title']}</p>"
-                                f"<p><strong>Status:</strong> {status}</p>"
-                                f"<p><strong>Severity:</strong> {severity or 'Unspecified'}</p>"
-                                f"<p><a href=\"{link}\">Open risk</a></p>"
-                            ),
-                            to_addrs=[new_assignee],
-                        )
+                        owner_email = _normalize_email(owner)
+                        to_addrs = _unique_emails([new_assignee, owner_email])
+                        sent = False
+                        if to_addrs:
+                            sent = _send_email(
+                                subject=f"Risk Assigned: {risk['title']}",
+                                html_body=(
+                                    f"<p>You have been assigned a risk.</p>"
+                                    f"<p><strong>Title:</strong> {risk['title']}</p>"
+                                    f"<p><strong>Status:</strong> {status}</p>"
+                                    f"<p><strong>Severity:</strong> {severity or 'Unspecified'}</p>"
+                                    f"<p><a href=\"{link}\">Open risk</a></p>"
+                                ),
+                                to_addrs=to_addrs,
+                            )
                         if sent:
                             _log_event(
                                 conn,
@@ -3684,7 +4186,7 @@ def admin_risk_detail(risk_id: int):
                                 event_type="notify",
                                 field="email",
                                 old_value="",
-                                new_value=new_assignee,
+                                new_value=",".join(to_addrs)[:500],
                                 actor=actor,
                             )
                 except Exception:

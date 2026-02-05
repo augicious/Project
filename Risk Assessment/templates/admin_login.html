@@ -7,6 +7,10 @@
         <form method="post" class="form">
             <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
             <label>
+                Your Email (for My queue)
+                <input type="email" name="who" placeholder="name@hdh.org" value="{{ session.get('admin_user_email','') }}" autocomplete="email" inputmode="email" />
+            </label>
+            <label>
                 Admin Password
                 <input type="password" name="password" required />
             </label>
