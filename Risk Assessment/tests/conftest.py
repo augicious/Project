@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import sys
 from pathlib import Path
 
@@ -11,10 +12,16 @@ def risk_app_module(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """Import the app module with an isolated temp DB + storage paths."""
 
     project_dir = Path(__file__).resolve().parents[1]
-    if str(project_dir) not in sys.path:
-        sys.path.insert(0, str(project_dir))
+    app_path = project_dir / "app.py"
+    spec = importlib.util.spec_from_file_location("risk_assessment_app", app_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Unable to load module spec for {app_path}")
 
-    import app as risk_app  # type: ignore
+    risk_app = importlib.util.module_from_spec(spec)
+    # Some code paths may do `import app`; ensure they resolve to the module under test.
+    sys.modules["risk_assessment_app"] = risk_app
+    sys.modules["app"] = risk_app
+    spec.loader.exec_module(risk_app)
 
     # Isolate filesystem side effects.
     monkeypatch.setattr(risk_app, "DATA_DIR", tmp_path / "data", raising=False)

@@ -114,7 +114,6 @@
             // If a page has a .sticky-bar, move sticky table headers below it.
             const stickyBar = document.querySelector('.sticky-bar');
             if (stickyBar) {
-                const extraGap = 12;
                 function readPxVar(name) {
                     const raw = getComputedStyle(root).getPropertyValue(name);
                     const n = parseInt(String(raw || '').trim(), 10);
@@ -123,7 +122,9 @@
                 function updateStickyStackOffset() {
                     const barOffset = readPxVar('--sticky-bar-offset');
                     const barHeight = stickyBar.offsetHeight || 0;
-                    root.style.setProperty('--sticky-stack-offset', String(barOffset + barHeight + extraGap) + 'px');
+                    const barStyle = getComputedStyle(stickyBar);
+                    const marginBottom = parseFloat(barStyle.marginBottom || '0') || 0;
+                    root.style.setProperty('--sticky-stack-offset', String(barOffset + barHeight + Math.max(0, marginBottom)) + 'px');
                 }
 
                 updateStickyStackOffset();

@@ -7,23 +7,26 @@
             <h2>{{ risk['title'] }}</h2>
             <p class="subtitle">Manage risk lifecycle and mitigation.</p>
         </div>
-        <div class="button-row">
+    </div>
+
+    <div class="sticky-bar" aria-label="Admin actions">
+        <div class="button-row" style="margin-top: 0; align-items: center;">
             <a class="button secondary" href="{{ url_for('admin_dashboard') }}">Back to dashboard</a>
+            <a class="button secondary" href="#tasks">Tasks</a>
+            <a class="button secondary" href="#attachments">Attachments</a>
+            <a class="button secondary" href="#audit-trail">Audit trail</a>
+            <a class="button secondary" href="#comments">Comments</a>
             {% if not (risk['deleted_at'] or '')|trim %}
                 <button type="submit" form="admin-risk-form">Save</button>
             {% endif %}
 
             {% if (risk['deleted_at'] or '')|trim %}
-                <form method="post" action="{{ url_for('admin_risk_restore', risk_id=risk['id']) }}" style="display:flex; gap: 8px; align-items:center;">
+                <form method="post" action="{{ url_for('admin_risk_restore', risk_id=risk['id']) }}" style="display:flex; gap: 8px; align-items:center; margin: 0;">
                     <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
                     <button type="submit" class="button secondary">Restore</button>
                 </form>
             {% else %}
-                <form method="post" action="{{ url_for('admin_risk_delete', risk_id=risk['id']) }}" style="display:flex; gap: 8px; align-items:center;" onsubmit="return confirm('Soft-delete this risk? It will be hidden from dashboards but kept for audit.');">
-                    <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
-                    <input type="text" name="reason" placeholder="Delete reason (optional)" maxlength="500" />
-                    <button type="submit" class="button secondary" style="border-color:#b00020; color:#b00020;">Delete</button>
-                </form>
+                <a class="button secondary" href="#danger-zone" style="border-color:#b00020; color:#b00020;">Danger zone</a>
             {% endif %}
         </div>
     </div>
@@ -34,6 +37,26 @@
             {% if (risk['deleted_by'] or '')|trim %}by {{ risk['deleted_by'] }}{% endif %}
             {% if (risk['deleted_reason'] or '')|trim %}— {{ risk['deleted_reason'] }}{% endif %}
         </div>
+    {% else %}
+        <details class="details" id="danger-zone">
+            <summary>Danger zone</summary>
+            <p class="subtitle">Soft-delete this risk (hidden from dashboards, kept for audit).</p>
+            <div class="alert danger" style="margin-top: 10px;">
+                This action hides the risk from normal views. You can restore it later.
+            </div>
+            <form method="post" action="{{ url_for('admin_risk_delete', risk_id=risk['id']) }}" class="form" style="margin-top: 12px;" onsubmit="return confirm('Soft-delete this risk? It will be hidden from dashboards but kept for audit.');">
+                <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
+                <div class="form-grid">
+                    <label class="grid-span-full">
+                        Delete reason (optional)
+                        <input type="text" name="reason" placeholder="Why is this being removed?" maxlength="500" />
+                    </label>
+                </div>
+                <div class="button-row mt-10">
+                    <button type="submit" class="button secondary" style="border-color:#b00020; color:#b00020;">Delete</button>
+                </div>
+            </form>
+        </details>
     {% endif %}
 
     <form method="post" class="form" id="admin-risk-form">
@@ -181,7 +204,7 @@
         <button type="submit">Save Updates</button>
     </form>
 
-    <details class="details">
+    <details class="details" id="tasks">
         <summary>Tasks ({{ tasks|length }})</summary>
         <p class="subtitle">Track work items, due dates, and reminders for this risk.</p>
 
@@ -271,7 +294,7 @@
         </div>
     </details>
 
-    <div class="section-block">
+    <div class="section-block" id="attachments">
         <div class="section-title">
             <h3>Attachments</h3>
             <p class="subtitle">Upload supporting files (PDF, images, Office docs). Max {{ config.get('MAX_CONTENT_LENGTH', 0) // (1024*1024) }}MB per request.</p>
@@ -399,32 +422,204 @@
                 <p class="subtitle">Latest comments appear first.</p>
             </div>
 
-            <form method="post" action="{{ url_for('admin_risk_comment_add', risk_id=risk['id']) }}" class="form">
+            <form method="post" action="{{ url_for('admin_risk_comment_add', risk_id=risk['id']) }}" class="form" id="comment-form">
                 <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
                 <label>
                     Add comment
-                    <textarea name="body" rows="4" placeholder="Write an update, question, or decision note..."></textarea>
+                    <textarea name="body" id="comment-body" rows="4" placeholder="Write an update, question, or decision note..." aria-describedby="comment-help"></textarea>
+                    <small class="help" id="comment-help">Tip: Press Ctrl+Enter to post. Use “Copy link” to share a specific comment.</small>
                 </label>
                 <div class="button-row" style="margin-top: 10px;">
-                    <button type="submit">Post comment</button>
+                    <button type="submit" id="comment-submit">Post comment</button>
                 </div>
             </form>
+
+            <script>
+                (function () {
+                    const form = document.getElementById('comment-form');
+                    const textarea = document.getElementById('comment-body');
+                    const submitBtn = document.getElementById('comment-submit');
+                    if (!form || !textarea) return;
+
+                    function autoGrow() {
+                        textarea.style.height = 'auto';
+                        textarea.style.overflowY = 'hidden';
+                        textarea.style.height = textarea.scrollHeight + 'px';
+                    }
+
+                    textarea.addEventListener('input', autoGrow);
+                    textarea.addEventListener('focus', autoGrow);
+                    window.addEventListener('resize', autoGrow, { passive: true });
+                    autoGrow();
+
+                    function syncSubmitDisabled() {
+                        if (!submitBtn) return;
+                        submitBtn.disabled = (textarea.value || '').trim().length === 0;
+                    }
+
+                    textarea.addEventListener('input', syncSubmitDisabled);
+                    textarea.addEventListener('change', syncSubmitDisabled);
+                    syncSubmitDisabled();
+
+                    textarea.addEventListener('keydown', function (e) {
+                        const isEnter = e.key === 'Enter' || e.keyCode === 13;
+                        if (!isEnter) return;
+                        if (!(e.ctrlKey || e.metaKey)) return;
+                        if (e.shiftKey || e.altKey) return;
+                        e.preventDefault();
+                        if ((textarea.value || '').trim().length === 0) {
+                            textarea.focus();
+                            return;
+                        }
+                        form.requestSubmit ? form.requestSubmit() : form.submit();
+                    });
+                })();
+            </script>
 
             {% if comments %}
                 <div class="event-list" style="margin-top: 12px;">
                     {% for c in comments %}
-                        <div class="event">
+                        <div class="event" id="comment-{{ c['id'] }}">
                             <div class="event-meta">
                                 <span class="badge">comment</span>
                                 <span class="event-actor">{{ c['author'] or 'system' }}</span>
                                 <span class="event-time">{{ (c['created_at'] or '')[:19].replace('T', ' ') }}</span>
+                                {% if (c['updated_at'] or '')|trim %}
+                                    <span class="badge secondary">edited</span>
+                                    <span class="event-time">{{ (c['updated_at'] or '')[:19].replace('T', ' ') }}</span>
+                                    {% if (c['updated_by'] or '')|trim %}
+                                        <span class="event-actor" style="opacity: 0.85;">{{ c['updated_by'] }}</span>
+                                    {% endif %}
+                                {% endif %}
+                                <a class="event-link" href="#comment-{{ c['id'] }}" title="Permalink to this comment">Link</a>
+                                <button type="button" class="button small secondary js-copy-comment-link" data-comment-id="{{ c['id'] }}">Copy link</button>
+                                <button type="button" class="button small secondary js-copy-comment-text" data-comment-id="{{ c['id'] }}">Copy text</button>
+                                <button type="button" class="button small secondary js-toggle-comment-edit" data-comment-id="{{ c['id'] }}">Edit</button>
                             </div>
                             <div class="event-body">
-                                <span class="event-diff" style="white-space: pre-wrap;">{{ c['body'] }}</span>
+                                <div class="comment-text">{{ c['body'] }}</div>
+
+                                <div class="comment-edit" data-comment-id="{{ c['id'] }}" hidden>
+                                    <form method="post" action="{{ url_for('admin_comment_edit', comment_id=c['id']) }}" class="form" style="width: 100%;">
+                                        <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
+                                        <label>
+                                            Edit comment
+                                            <textarea name="body" rows="5">{{ c['body'] }}</textarea>
+                                        </label>
+                                        <div class="button-row" style="margin-top: 10px;">
+                                            <button type="submit">Save</button>
+                                            <button type="button" class="button secondary js-cancel-comment-edit" data-comment-id="{{ c['id'] }}">Cancel</button>
+                                        </div>
+                                    </form>
+                                </div>
                             </div>
                         </div>
                     {% endfor %}
                 </div>
+
+                <script>
+                    (function () {
+                        function buildCommentUrl(commentId) {
+                            try {
+                                const url = new URL(window.location.href);
+                                url.hash = 'comment-' + String(commentId);
+                                return url.toString();
+                            } catch (e) {
+                                return window.location.href.split('#')[0] + '#comment-' + String(commentId);
+                            }
+                        }
+
+                        async function copyToClipboard(text) {
+                            if (navigator.clipboard && navigator.clipboard.writeText) {
+                                await navigator.clipboard.writeText(text);
+                                return;
+                            }
+                            const el = document.createElement('textarea');
+                            el.value = text;
+                            el.setAttribute('readonly', '');
+                            el.style.position = 'fixed';
+                            el.style.left = '-9999px';
+                            document.body.appendChild(el);
+                            el.select();
+                            document.execCommand('copy');
+                            document.body.removeChild(el);
+                        }
+
+                        document.querySelectorAll('.js-copy-comment-link').forEach(function (btn) {
+                            btn.addEventListener('click', async function () {
+                                const commentId = btn.getAttribute('data-comment-id');
+                                const url = buildCommentUrl(commentId);
+                                try {
+                                    await copyToClipboard(url);
+                                    const prev = btn.textContent;
+                                    btn.textContent = 'Copied';
+                                    setTimeout(function () { btn.textContent = prev; }, 1400);
+                                } catch (e) {
+                                    window.prompt('Copy this link:', url);
+                                }
+                            });
+                        });
+
+                        document.querySelectorAll('.js-copy-comment-text').forEach(function (btn) {
+                            btn.addEventListener('click', async function () {
+                                const commentId = btn.getAttribute('data-comment-id');
+                                const root = document.getElementById('comment-' + String(commentId));
+                                const textEl = root ? root.querySelector('.comment-text') : null;
+                                const text = textEl ? (textEl.innerText || '').trim() : '';
+                                if (!text) {
+                                    return;
+                                }
+                                try {
+                                    await copyToClipboard(text);
+                                    const prev = btn.textContent;
+                                    btn.textContent = 'Copied';
+                                    setTimeout(function () { btn.textContent = prev; }, 1400);
+                                } catch (e) {
+                                    window.prompt('Copy this text:', text);
+                                }
+                            });
+                        });
+
+                        function setEditOpen(commentId, open) {
+                            const root = document.getElementById('comment-' + String(commentId));
+                            if (!root) return;
+                            const editEl = root.querySelector('.comment-edit');
+                            if (!editEl) return;
+                            if (open) {
+                                editEl.hidden = false;
+                                const ta = editEl.querySelector('textarea');
+                                if (ta) {
+                                    ta.focus();
+                                    try {
+                                        ta.selectionStart = ta.value.length;
+                                        ta.selectionEnd = ta.value.length;
+                                    } catch (e) {
+                                        // ignore
+                                    }
+                                }
+                            } else {
+                                editEl.hidden = true;
+                            }
+                        }
+
+                        document.querySelectorAll('.js-toggle-comment-edit').forEach(function (btn) {
+                            btn.addEventListener('click', function () {
+                                const commentId = btn.getAttribute('data-comment-id');
+                                const root = document.getElementById('comment-' + String(commentId));
+                                const editEl = root ? root.querySelector('.comment-edit') : null;
+                                const isOpen = !!(editEl && editEl.hidden === false);
+                                setEditOpen(commentId, !isOpen);
+                            });
+                        });
+
+                        document.querySelectorAll('.js-cancel-comment-edit').forEach(function (btn) {
+                            btn.addEventListener('click', function () {
+                                const commentId = btn.getAttribute('data-comment-id');
+                                setEditOpen(commentId, false);
+                            });
+                        });
+                    })();
+                </script>
             {% else %}
                 <div class="empty">No comments yet.</div>
             {% endif %}
@@ -433,78 +628,101 @@
 
     <script>
         (function () {
-            if (window.location.hash !== '#audit-trail') {
+            const hash = window.location.hash || '';
+            if (!hash) {
                 return;
             }
-            const el = document.getElementById('audit-trail');
-            if (!el) {
+
+            function openAndScroll(detailsId, targetId) {
+                const detailsEl = document.getElementById(detailsId);
+                if (!detailsEl) {
+                    return;
+                }
+                if (detailsEl.tagName && detailsEl.tagName.toLowerCase() === 'details') {
+                    detailsEl.open = true;
+                }
+
+                const targetEl = targetId ? document.getElementById(targetId) : detailsEl;
+                if (!targetEl) {
+                    return;
+                }
+                try {
+                    targetEl.scrollIntoView({ block: 'start', behavior: 'smooth' });
+                } catch (e) {
+                    // ignore
+                }
+            }
+
+            if (hash === '#audit-trail') {
+                openAndScroll('audit-trail');
                 return;
             }
-            if (el.tagName && el.tagName.toLowerCase() === 'details') {
-                el.open = true;
+
+            if (hash === '#comments') {
+                openAndScroll('comments');
+                return;
             }
-            try {
-                el.scrollIntoView({ block: 'start', behavior: 'smooth' });
-            } catch (e) {
-                // ignore
+
+            if (hash.indexOf('#comment-') === 0) {
+                openAndScroll('comments', hash.slice(1));
             }
+        })();
+    </script>
+
+    <script>
+        (function () {
+            const formEl = document.getElementById('admin-risk-form');
+            const statusEl = document.getElementById('admin-status');
+            const closeReasonEl = document.getElementById('admin-close-reason');
+            const helpEl = document.getElementById('admin-close-reason-help');
+
+            if (!statusEl || !closeReasonEl) {
+                return;
+            }
+
+            function markCloseReasonInvalid(isInvalid) {
+                closeReasonEl.setAttribute('aria-invalid', isInvalid ? 'true' : 'false');
+            }
+
+            function updateCloseReasonRule() {
+                const isClosed = (statusEl.value || '').trim() === 'Closed';
+                closeReasonEl.required = isClosed;
+                closeReasonEl.setAttribute('aria-required', isClosed ? 'true' : 'false');
+                if (helpEl) {
+                    helpEl.hidden = !isClosed;
+                }
+                if (!isClosed) {
+                    markCloseReasonInvalid(false);
+                }
+            }
+
+            function validateCloseReason() {
+                const isClosed = (statusEl.value || '').trim() === 'Closed';
+                const value = (closeReasonEl.value || '').trim();
+                const invalid = Boolean(isClosed && !value);
+                markCloseReasonInvalid(invalid);
+                return !invalid;
+            }
+
+            statusEl.addEventListener('change', updateCloseReasonRule);
+            closeReasonEl.addEventListener('blur', validateCloseReason);
+
+            if (formEl) {
+                formEl.addEventListener('submit', function (e) {
+                    formEl.classList.add('was-validated');
+                    if (!validateCloseReason()) {
+                        e.preventDefault();
+                        closeReasonEl.focus();
+                    }
+                });
+            }
+
+            updateCloseReasonRule();
         })();
     </script>
 
     <div class="detail-grid">
         <div>
-
-        <script>
-            (function () {
-                const formEl = document.getElementById('admin-risk-form');
-                const statusEl = document.getElementById('admin-status');
-                const closeReasonEl = document.getElementById('admin-close-reason');
-                const helpEl = document.getElementById('admin-close-reason-help');
-
-                if (!statusEl || !closeReasonEl) {
-                    return;
-                }
-
-                function markCloseReasonInvalid(isInvalid) {
-                    closeReasonEl.setAttribute('aria-invalid', isInvalid ? 'true' : 'false');
-                }
-
-                function updateCloseReasonRule() {
-                    const isClosed = (statusEl.value || '').trim() === 'Closed';
-                    closeReasonEl.required = isClosed;
-                    closeReasonEl.setAttribute('aria-required', isClosed ? 'true' : 'false');
-                    if (helpEl) {
-                        helpEl.hidden = !isClosed;
-                    }
-                    if (!isClosed) {
-                        markCloseReasonInvalid(false);
-                    }
-                }
-
-                function validateCloseReason() {
-                    const isClosed = (statusEl.value || '').trim() === 'Closed';
-                    const value = (closeReasonEl.value || '').trim();
-                    const invalid = Boolean(isClosed && !value);
-                    markCloseReasonInvalid(invalid);
-                    return !invalid;
-                }
-
-                statusEl.addEventListener('change', updateCloseReasonRule);
-                closeReasonEl.addEventListener('blur', validateCloseReason);
-
-                if (formEl) {
-                    formEl.addEventListener('submit', function (e) {
-                        formEl.classList.add('was-validated');
-                        if (!validateCloseReason()) {
-                            e.preventDefault();
-                            closeReasonEl.focus();
-                        }
-                    });
-                }
-
-                updateCloseReasonRule();
-            })();
-        </script>
             <h3>Description</h3>
             <p>{{ risk['description'] }}</p>
         </div>

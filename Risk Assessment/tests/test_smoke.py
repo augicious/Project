@@ -86,3 +86,49 @@ def test_admin_dashboard_loads_for_admin(client):
     resp = client.get("/admin/dashboard")
     assert resp.status_code == 200
     assert b"Admin Dashboard" in resp.data
+
+
+def test_admin_comment_edit_smoke(client, risk_app_module):
+    now = risk_app_module.datetime.now(risk_app_module.timezone.utc).replace(tzinfo=None).isoformat()
+    with risk_app_module.get_db_connection() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO risks (title, description, status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            ("Test Risk", "Desc", "New", now, now),
+        )
+        risk_id = int(cur.lastrowid)
+        cur = conn.execute(
+            """
+            INSERT INTO risk_comments (risk_id, body, author, created_at)
+            VALUES (?, ?, ?, ?)
+            """.strip(),
+            (risk_id, "Original", "tester", now),
+        )
+        comment_id = int(cur.lastrowid)
+        conn.commit()
+
+    with client.session_transaction() as sess:
+        sess["is_admin"] = True
+        sess["_csrf_token"] = "test-csrf"
+
+    resp = client.post(
+        f"/admin/comments/{comment_id}/edit",
+        data={
+            "_csrf_token": "test-csrf",
+            "body": "Edited body",
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code in (301, 302)
+
+    with risk_app_module.get_db_connection() as conn:
+        row = conn.execute(
+            "SELECT body, updated_at, updated_by FROM risk_comments WHERE id = ?",
+            (comment_id,),
+        ).fetchone()
+        assert row is not None
+        assert row["body"] == "Edited body"
+        assert (row["updated_at"] or "").strip() != ""
+        assert (row["updated_by"] or "").strip() != ""

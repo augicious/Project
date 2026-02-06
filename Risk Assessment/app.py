@@ -1246,7 +1246,9 @@ def init_db() -> None:
                 risk_id INTEGER NOT NULL,
                 body TEXT NOT NULL,
                 author TEXT,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                updated_at TEXT,
+                updated_by TEXT
             )
             """
         )
@@ -1285,6 +1287,12 @@ def init_db() -> None:
             conn.execute("ALTER TABLE risk_attachments ADD COLUMN is_archived INTEGER NOT NULL DEFAULT 0")
         if "archived_at" not in cols:
             conn.execute("ALTER TABLE risk_attachments ADD COLUMN archived_at TEXT")
+
+        comment_cols = [row[1] for row in conn.execute("PRAGMA table_info(risk_comments)").fetchall()]
+        if "updated_at" not in comment_cols:
+            conn.execute("ALTER TABLE risk_comments ADD COLUMN updated_at TEXT")
+        if "updated_by" not in comment_cols:
+            conn.execute("ALTER TABLE risk_comments ADD COLUMN updated_by TEXT")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS kpis (
@@ -4040,6 +4048,70 @@ def admin_risk_comment_add(risk_id: int):
 
     flash("Comment added.", "success")
     return redirect(url_for("admin_risk_detail", risk_id=risk_id) + "#comments")
+
+
+@app.route("/admin/comments/<int:comment_id>/edit", methods=["POST"])
+def admin_comment_edit(comment_id: int):
+    if not require_admin():
+        return redirect(url_for("admin"))
+
+    body = (request.form.get("body") or "").strip()
+    if not body:
+        flash("Comment cannot be empty.", "warning")
+        return redirect(url_for("admin_dashboard"))
+
+    actor = _current_actor()
+    now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+
+    with get_db_connection() as conn:
+        comment = conn.execute(
+            "SELECT * FROM risk_comments WHERE id = ?",
+            (comment_id,),
+        ).fetchone()
+        if comment is None:
+            flash("Comment not found.", "warning")
+            return redirect(url_for("admin_dashboard"))
+
+        risk_id = int(comment["risk_id"])
+        risk = conn.execute("SELECT * FROM risks WHERE id = ?", (risk_id,)).fetchone()
+        if risk is None:
+            flash("Risk not found.", "warning")
+            return redirect(url_for("admin_dashboard"))
+
+        is_deleted = bool((risk["deleted_at"] or "").strip())
+        if request.method == "POST" and is_deleted:
+            flash("This risk is deleted. Restore it before editing.", "warning")
+            return redirect(url_for("admin_risk_detail", risk_id=risk_id))
+
+        old_body = (comment["body"] or "")
+        if old_body.strip() == body.strip():
+            flash("No changes to save.", "info")
+            return redirect(url_for("admin_risk_detail", risk_id=risk_id) + f"#comment-{comment_id}")
+
+        conn.execute(
+            "UPDATE risk_comments SET body = ?, updated_at = ?, updated_by = ? WHERE id = ?",
+            (body, now, actor, comment_id),
+        )
+
+        _log_event(
+            conn,
+            risk_id=risk_id,
+            event_type="comment_edit",
+            field="comment",
+            old_value=(old_body.replace("\n", " ")[:500]),
+            new_value=(body.replace("\n", " ")[:500]),
+            actor=actor,
+        )
+
+        conn.execute(
+            "UPDATE risks SET updated_by = ?, updated_at = ? WHERE id = ?",
+            (actor, now, risk_id),
+        )
+
+        conn.commit()
+
+    flash("Comment updated.", "success")
+    return redirect(url_for("admin_risk_detail", risk_id=risk_id) + f"#comment-{comment_id}")
 
 
 @app.route("/admin/bulk_update", methods=["POST"])

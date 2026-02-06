@@ -13,6 +13,17 @@
         </div>
     </div>
 
+    <div class="sticky-bar" aria-label="Risk actions">
+        <div class="button-row" style="margin-top: 0;">
+            <a class="button secondary" href="{{ url_for('index') }}">Back to risks</a>
+            <a class="button secondary" href="#attachments">Attachments</a>
+            <a class="button secondary" href="#audit-trail">Audit trail</a>
+            {% if session.get('is_admin') or (session.get('user') and session['user'].get('is_admin')) %}
+                <a class="button" href="{{ url_for('admin_risk_detail', risk_id=risk['id']) }}">Open in admin</a>
+            {% endif %}
+        </div>
+    </div>
+
     <div class="detail-grid">
         <div>
             <h3>Description</h3>
@@ -100,7 +111,7 @@
         </div>
     </div>
 
-    <div class="section-block">
+    <div class="section-block" id="attachments">
         <div class="section-title">
             <h3>Attachments</h3>
             <p class="subtitle">Files uploaded by admins for this risk.</p>
