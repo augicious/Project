@@ -9,9 +9,32 @@
         </div>
         <div class="button-row">
             <a class="button secondary" href="{{ url_for('admin_dashboard') }}">Back to dashboard</a>
-            <button type="submit" form="admin-risk-form">Save</button>
+            {% if not (risk['deleted_at'] or '')|trim %}
+                <button type="submit" form="admin-risk-form">Save</button>
+            {% endif %}
+
+            {% if (risk['deleted_at'] or '')|trim %}
+                <form method="post" action="{{ url_for('admin_risk_restore', risk_id=risk['id']) }}" style="display:flex; gap: 8px; align-items:center;">
+                    <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
+                    <button type="submit" class="button secondary">Restore</button>
+                </form>
+            {% else %}
+                <form method="post" action="{{ url_for('admin_risk_delete', risk_id=risk['id']) }}" style="display:flex; gap: 8px; align-items:center;" onsubmit="return confirm('Soft-delete this risk? It will be hidden from dashboards but kept for audit.');">
+                    <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
+                    <input type="text" name="reason" placeholder="Delete reason (optional)" maxlength="500" />
+                    <button type="submit" class="button secondary" style="border-color:#b00020; color:#b00020;">Delete</button>
+                </form>
+            {% endif %}
         </div>
     </div>
+
+    {% if (risk['deleted_at'] or '')|trim %}
+        <div class="alert warning">
+            <strong>Deleted:</strong> {{ (risk['deleted_at'] or '')[:19].replace('T',' ') }}
+            {% if (risk['deleted_by'] or '')|trim %}by {{ risk['deleted_by'] }}{% endif %}
+            {% if (risk['deleted_reason'] or '')|trim %}— {{ risk['deleted_reason'] }}{% endif %}
+        </div>
+    {% endif %}
 
     <form method="post" class="form" id="admin-risk-form">
         <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />

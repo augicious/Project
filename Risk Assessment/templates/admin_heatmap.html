@@ -2,14 +2,63 @@
 
 {% block content %}
 <section class="card">
+    <style>
+        .heatmap-toolbar { display:flex; gap:12px; align-items:flex-end; justify-content:space-between; flex-wrap:wrap; margin-top: 8px; }
+        .heatmap-toolbar .meta { color: rgba(255,255,255,0.75); font-size: 0.95rem; }
+        .heatmap-toolbar label { display:block; font-size: 0.9rem; color: rgba(255,255,255,0.75); margin-bottom: 4px; }
+        .heatmap-toolbar select { min-width: 180px; }
+
+        .hm-table { width: 100%; min-width: 560px; border-collapse: collapse; }
+        .hm-table th { text-align: center; padding: 10px 8px; font-weight: 800; border-bottom: 1px solid rgba(255,255,255,0.10); }
+        .hm-table th:first-child { text-align: left; }
+        .hm-table td { text-align: center; padding: 10px 8px; border-top: 1px solid rgba(255,255,255,0.08); }
+        .hm-rowhdr { text-align:left !important; font-weight: 800; }
+
+        .hm-cell { position: relative; border-radius: 8px; }
+        .hm-count { font-weight: 900; font-size: 1.1rem; }
+        .hm-score { font-size: 0.8rem; opacity: 0.85; margin-top: 2px; }
+        .hm-zero { opacity: 0.55; }
+
+        /* Dark-theme friendly heat colors */
+        .hm-low { background: rgba(46, 204, 113, 0.22); }
+        .hm-medium { background: rgba(241, 196, 15, 0.22); }
+        .hm-high { background: rgba(230, 126, 34, 0.22); }
+        .hm-critical { background: rgba(231, 76, 60, 0.24); }
+        .hm-legend { display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top: 6px; }
+        .hm-pill { display:inline-flex; gap:8px; align-items:center; padding: 6px 10px; border-radius: 999px; border: 1px solid rgba(255,255,255,0.12); color: rgba(255,255,255,0.85); font-size: 0.9rem; }
+        .hm-swatch { width: 14px; height: 14px; border-radius: 4px; display:inline-block; }
+    </style>
+
     <div class="detail-header">
         <div>
             <h2>Risk Heatmap</h2>
-            <p class="subtitle">Likelihood × Impact scoring (1–25) using Very Low → Very High.</p>
+            <p class="subtitle">Likelihood × Impact scoring (1–25) using Very Low → Very High. Deleted risks are excluded.</p>
         </div>
         <div class="button-row">
             <a class="button secondary" href="{{ url_for('admin_dashboard') }}">Back to dashboard</a>
             <a class="button secondary" href="{{ url_for('admin_trends') }}">Trends</a>
+        </div>
+    </div>
+
+    <div class="heatmap-toolbar">
+        <form method="get" action="{{ url_for('admin_heatmap') }}" style="display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap;">
+            <div>
+                <label for="scope">Scope</label>
+                <select id="scope" name="scope">
+                    <option value="open" {% if scope != 'all' %}selected{% endif %}>Open only</option>
+                    <option value="all" {% if scope == 'all' %}selected{% endif %}>All (including closed)</option>
+                </select>
+            </div>
+            <div>
+                <button class="button" type="submit">Apply</button>
+            </div>
+        </form>
+
+        <div class="meta">
+            Included: <strong>{{ included_total }}</strong>
+            {% if scope != 'all' %}(open){% else %}(all){% endif %}
+            · Excluded deleted: <strong>{{ deleted_excluded }}</strong>
+            {% if scope != 'all' %}· Excluded non-open: <strong>{{ nonopen_excluded }}</strong>{% endif %}
         </div>
     </div>
 
@@ -20,10 +69,11 @@
                 <p class="subtitle">Based on initial likelihood/impact (falls back to legacy likelihood/impact if initial is blank).</p>
             </div>
             <div class="summary-grid">
-                {% for label, count in band_counts_initial.items() %}
+                {% set band_order = ['Critical','High','Medium','Low','Unscored'] %}
+                {% for label in band_order %}
                     <div class="summary-card">
                         <span class="label">{{ label }}</span>
-                        <strong>{{ count }}</strong>
+                        <strong>{{ band_counts_initial.get(label, 0) }}</strong>
                     </div>
                 {% endfor %}
             </div>
@@ -35,10 +85,11 @@
                 <p class="subtitle">Based on residual likelihood/impact.</p>
             </div>
             <div class="summary-grid">
-                {% for label, count in band_counts_residual.items() %}
+                {% set band_order = ['Critical','High','Medium','Low','Unscored'] %}
+                {% for label in band_order %}
                     <div class="summary-card">
                         <span class="label">{{ label }}</span>
-                        <strong>{{ count }}</strong>
+                        <strong>{{ band_counts_residual.get(label, 0) }}</strong>
                     </div>
                 {% endfor %}
             </div>
@@ -49,9 +100,15 @@
         <div class="section-title">
             <h3>Heatmap (Initial)</h3>
             <p class="subtitle">Rows = Likelihood, Columns = Impact. Unscored: {{ initial_unscored }}</p>
+            <div class="hm-legend">
+                <span class="hm-pill"><span class="hm-swatch hm-low"></span>Low</span>
+                <span class="hm-pill"><span class="hm-swatch hm-medium"></span>Medium</span>
+                <span class="hm-pill"><span class="hm-swatch hm-high"></span>High</span>
+                <span class="hm-pill"><span class="hm-swatch hm-critical"></span>Critical</span>
+            </div>
         </div>
         <div style="overflow:auto;">
-            <table class="table-plain" style="min-width: 520px; width: 100%; border-collapse: collapse;">
+            <table class="hm-table">
                 <thead>
                     <tr>
                         <th style="text-align:left; padding: 8px;">Likelihood \ Impact</th>
@@ -63,10 +120,28 @@
                 <tbody>
                     {% for l in range(1,6) %}
                         <tr>
-                            <td style="padding: 8px; font-weight: 700;">{{ levels[l-1] }}</td>
+                            <td class="hm-rowhdr">{{ levels[l-1] }}</td>
                             {% for i in range(1,6) %}
                                 {% set c = initial_matrix.get((l,i), 0) %}
-                                <td style="text-align:center; padding: 8px; border-top: 1px solid rgba(255,255,255,0.08);">{{ c }}</td>
+                                {% set score = l*i %}
+                                {% if score <= 3 %}
+                                    {% set band_class = 'hm-low' %}
+                                    {% set band_label = 'Low' %}
+                                {% elif score <= 8 %}
+                                    {% set band_class = 'hm-medium' %}
+                                    {% set band_label = 'Medium' %}
+                                {% elif score <= 12 %}
+                                    {% set band_class = 'hm-high' %}
+                                    {% set band_label = 'High' %}
+                                {% else %}
+                                    {% set band_class = 'hm-critical' %}
+                                    {% set band_label = 'Critical' %}
+                                {% endif %}
+
+                                <td title="Score {{ score }} ({{ band_label }})" class="hm-cell {{ band_class }} {% if c == 0 %}hm-zero{% endif %}">
+                                    <div class="hm-count">{{ c }}</div>
+                                    <div class="hm-score">{{ score }}</div>
+                                </td>
                             {% endfor %}
                         </tr>
                     {% endfor %}
@@ -79,9 +154,15 @@
         <div class="section-title">
             <h3>Heatmap (Residual)</h3>
             <p class="subtitle">Rows = Likelihood, Columns = Impact. Unscored: {{ residual_unscored }}</p>
+            <div class="hm-legend">
+                <span class="hm-pill"><span class="hm-swatch hm-low"></span>Low</span>
+                <span class="hm-pill"><span class="hm-swatch hm-medium"></span>Medium</span>
+                <span class="hm-pill"><span class="hm-swatch hm-high"></span>High</span>
+                <span class="hm-pill"><span class="hm-swatch hm-critical"></span>Critical</span>
+            </div>
         </div>
         <div style="overflow:auto;">
-            <table class="table-plain" style="min-width: 520px; width: 100%; border-collapse: collapse;">
+            <table class="hm-table">
                 <thead>
                     <tr>
                         <th style="text-align:left; padding: 8px;">Likelihood \ Impact</th>
@@ -93,10 +174,28 @@
                 <tbody>
                     {% for l in range(1,6) %}
                         <tr>
-                            <td style="padding: 8px; font-weight: 700;">{{ levels[l-1] }}</td>
+                            <td class="hm-rowhdr">{{ levels[l-1] }}</td>
                             {% for i in range(1,6) %}
                                 {% set c = residual_matrix.get((l,i), 0) %}
-                                <td style="text-align:center; padding: 8px; border-top: 1px solid rgba(255,255,255,0.08);">{{ c }}</td>
+                                {% set score = l*i %}
+                                {% if score <= 3 %}
+                                    {% set band_class = 'hm-low' %}
+                                    {% set band_label = 'Low' %}
+                                {% elif score <= 8 %}
+                                    {% set band_class = 'hm-medium' %}
+                                    {% set band_label = 'Medium' %}
+                                {% elif score <= 12 %}
+                                    {% set band_class = 'hm-high' %}
+                                    {% set band_label = 'High' %}
+                                {% else %}
+                                    {% set band_class = 'hm-critical' %}
+                                    {% set band_label = 'Critical' %}
+                                {% endif %}
+
+                                <td title="Score {{ score }} ({{ band_label }})" class="hm-cell {{ band_class }} {% if c == 0 %}hm-zero{% endif %}">
+                                    <div class="hm-count">{{ c }}</div>
+                                    <div class="hm-score">{{ score }}</div>
+                                </td>
                             {% endfor %}
                         </tr>
                     {% endfor %}

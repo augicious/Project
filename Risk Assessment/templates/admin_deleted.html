@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="card">
+    <div class="detail-header">
+        <div>
+            <h2>Deleted Risks</h2>
+            <p class="subtitle">Soft-deleted risks are hidden from dashboards but kept for audit.</p>
+        </div>
+        <div class="button-row">
+            <a class="button secondary" href="{{ url_for('admin_dashboard') }}">Back to dashboard</a>
+        </div>
+    </div>
+
+    <form method="get" class="form" style="margin-top: 10px;">
+        <div class="form-grid">
+            <label style="grid-column: 1 / -1;">
+                Search
+                <input type="text" name="q" value="{{ query_text or '' }}" placeholder="Search title or description" />
+            </label>
+        </div>
+        <div class="button-row" style="margin-top: 10px;">
+            <button type="submit">Search</button>
+            {% if query_text %}
+                <a class="button secondary" href="{{ url_for('admin_deleted') }}">Clear</a>
+            {% endif %}
+        </div>
+    </form>
+
+    <div class="table" style="margin-top: 14px;">
+        <div class="table-row table-header admin-list">
+            <div>Title</div>
+            <div>Deleted</div>
+            <div>Deleted By</div>
+            <div>Reason</div>
+            <div>Status</div>
+            <div>Assigned</div>
+        </div>
+
+        {% for risk in risks %}
+            <div class="table-row admin-list">
+                <div class="title">
+                    <a href="{{ url_for('admin_risk_detail', risk_id=risk['id']) }}" title="Open risk detail">{{ risk['title'] }}</a>
+                    <div class="muted">#{{ risk['id'] }}</div>
+                </div>
+                <div>{{ (risk['deleted_at'] or '')[:19].replace('T',' ') }}</div>
+                <div title="{{ risk['deleted_by'] or '' }}">{{ risk['deleted_by'] or '—' }}</div>
+                <div title="{{ risk['deleted_reason'] or '' }}">{{ risk['deleted_reason'] or '—' }}</div>
+                <div><span class="badge status">{{ risk['status'] }}</span></div>
+                <div title="{{ risk['assigned_to'] or '' }}">{{ risk['assigned_to'] or '—' }}</div>
+            </div>
+        {% else %}
+            <div class="empty">No deleted risks found.</div>
+        {% endfor %}
+    </div>
+
+    {% if pagination.pages > 1 %}
+        <div class="pager" aria-label="Deleted risks pagination" style="margin-top: 12px;">
+            <div class="pager-left">
+                <span class="muted">Showing page {{ pagination.page }} of {{ pagination.pages }} ({{ pagination.total }} total)</span>
+            </div>
+            <div class="pager-right">
+                {% if pagination.has_prev %}
+                    <a class="button secondary" href="{{ pagination.prev_url }}">Previous</a>
+                {% endif %}
+                {% if pagination.has_next %}
+                    <a class="button secondary" href="{{ pagination.next_url }}">Next</a>
+                {% endif %}
+            </div>
+        </div>
+    {% endif %}
+</section>
+{% endblock %}

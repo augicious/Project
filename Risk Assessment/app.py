@@ -246,6 +246,7 @@ app.config["RISK_REGISTER_PATH"] = Path(
     os.getenv("RISK_REGISTER_PATH", str(DEFAULT_RISK_REGISTER))
 )
 app.config["DB_INITIALIZED"] = False
+app.config["ENABLE_ADMIN_IMPORT"] = _env_bool("ENABLE_ADMIN_IMPORT", False)
 
 # Trust reverse-proxy headers (IIS/ARR) so redirects and OAuth callbacks work behind HTTPS.
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
@@ -337,6 +338,13 @@ def _csrf_token() -> str:
     token = secrets.token_urlsafe(32)
     session["_csrf_token"] = token
     return token
+
+
+@app.context_processor
+def _inject_template_flags():
+    return {
+        "enable_admin_import": bool(app.config.get("ENABLE_ADMIN_IMPORT", False)),
+    }
 
 
 app.jinja_env.globals["csrf_token"] = _csrf_token
@@ -1040,6 +1048,9 @@ def init_db() -> None:
                 updated_by TEXT,
                 closed_at TEXT,
                 close_reason TEXT,
+                deleted_at TEXT,
+                deleted_by TEXT,
+                deleted_reason TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )
@@ -1173,6 +1184,9 @@ def init_db() -> None:
             ("updated_by", "TEXT"),
             ("closed_at", "TEXT"),
             ("close_reason", "TEXT"),
+            ("deleted_at", "TEXT"),
+            ("deleted_by", "TEXT"),
+            ("deleted_reason", "TEXT"),
         ]
         for column_name, column_type in extra_columns:
             try:
@@ -1189,6 +1203,8 @@ def init_db() -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_risks_owner ON risks(owner)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_risks_assigned_to ON risks(assigned_to)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_risks_source_sheet ON risks(source_sheet)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_risks_deleted_at ON risks(deleted_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_risks_deleted_by ON risks(deleted_by)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_risk_events_risk_type_created ON risk_events(risk_id, event_type, created_at)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_risk_attachments_risk_id ON risk_attachments(risk_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_risk_tasks_risk_id ON risk_tasks(risk_id)")
@@ -1239,6 +1255,11 @@ def _where_join(base_where_sql: str, condition_sql: str) -> str:
     if base_where_sql.strip():
         return base_where_sql + " AND " + condition_sql
     return " WHERE " + condition_sql
+
+
+def _not_deleted_condition(table_alias: str | None = None) -> str:
+    col = f"{table_alias}.deleted_at" if table_alias else "deleted_at"
+    return f"TRIM(COALESCE({col}, '')) = ''"
 
 
 def _normalize_header(header: str) -> str:
@@ -1535,6 +1556,67 @@ def _rating_value(value: str | None) -> int | None:
     return None
 
 
+def _rating_1_to_5(value: str | None) -> int | None:
+    """Return a normalized 1..5 rating or None.
+
+    Some legacy paths accept numeric strings; clamp anything outside the 1..5
+    scale so admin analytics (heatmap/trends) never crash.
+    """
+
+    n = _rating_value(value)
+    if n is None:
+        return None
+    if n <= 0:
+        return None
+
+    # Preferred scale is 1..5.
+    if 1 <= n <= 5:
+        return n
+
+    # Legacy numeric imports sometimes used 1..10.
+    # Map to 1..5 buckets: 1-2→1, 3-4→2, 5-6→3, 7-8→4, 9-10→5.
+    if 1 <= n <= 10:
+        return int((n + 1) // 2)
+
+    return None
+
+
+def _score_1_to_25(likelihood: int | None, impact: int | None) -> int | None:
+    if likelihood is None or impact is None:
+        return None
+    try:
+        l = int(likelihood)
+        i = int(impact)
+    except Exception:
+        return None
+    if l <= 0 or i <= 0:
+        return None
+    score = l * i
+    if score < 1:
+        return 1
+    if score > 25:
+        return 25
+    return score
+
+
+def _score_band(score: int | None) -> str:
+    if score is None:
+        return "Unscored"
+    try:
+        s = int(score)
+    except Exception:
+        return "Unscored"
+    if s <= 0:
+        return "Unscored"
+    if s <= 3:
+        return "Low"
+    if s <= 8:
+        return "Medium"
+    if s <= 12:
+        return "High"
+    return "Critical"
+
+
 def _parse_date(value: str | None) -> datetime | None:
     """Parse common date formats used in this app (ISO-ish strings)."""
 
@@ -1749,6 +1831,9 @@ def _build_admin_risks_query(
     filters: list[str] = []
     params: list[str] = []
 
+    # Hide soft-deleted risks in normal admin lists.
+    filters.append(_not_deleted_condition())
+
     if status_filter != "all":
         filters.append("LOWER(TRIM(status)) = ?")
         params.append(status_filter.lower())
@@ -1791,6 +1876,9 @@ def _build_admin_risks_where(
 ) -> tuple[str, list[str]]:
     filters: list[str] = []
     params: list[str] = []
+
+    # Hide soft-deleted risks in normal admin lists.
+    filters.append(_not_deleted_condition())
 
     if status_filter != "all":
         filters.append("LOWER(TRIM(status)) = ?")
@@ -1836,6 +1924,9 @@ def _build_admin_export_where(
 ) -> tuple[str, list[str]]:
     filters: list[str] = []
     params: list[str] = []
+
+    # Hide soft-deleted risks in normal exports.
+    filters.append(_not_deleted_condition())
 
     # Reuse the same semantics as the admin dashboard filters.
     if status_filter != "all":
@@ -2292,6 +2383,9 @@ def index():
     filters = []
     params = []
 
+    # Exclude soft-deleted risks from the public list.
+    filters.append(_not_deleted_condition())
+
     if status_filter != "all":
         filters.append("LOWER(TRIM(status)) = ?")
         params.append(status_filter.lower())
@@ -2317,19 +2411,19 @@ def index():
         statuses = [
             row["status"]
             for row in conn.execute(
-                "SELECT DISTINCT TRIM(status) as status FROM risks WHERE status IS NOT NULL AND TRIM(status) <> ''"
+                f"SELECT DISTINCT TRIM(status) as status FROM risks WHERE {_not_deleted_condition()} AND status IS NOT NULL AND TRIM(status) <> ''"
             )
         ]
         owners = [
             row["owner"]
             for row in conn.execute(
-                "SELECT DISTINCT TRIM(owner) as owner FROM risks WHERE owner IS NOT NULL AND TRIM(owner) <> ''"
+                f"SELECT DISTINCT TRIM(owner) as owner FROM risks WHERE {_not_deleted_condition()} AND owner IS NOT NULL AND TRIM(owner) <> ''"
             )
         ]
         sheets = [
             row["source_sheet"]
             for row in conn.execute(
-                "SELECT DISTINCT TRIM(source_sheet) as source_sheet FROM risks WHERE source_sheet IS NOT NULL AND TRIM(source_sheet) <> ''"
+                f"SELECT DISTINCT TRIM(source_sheet) as source_sheet FROM risks WHERE {_not_deleted_condition()} AND source_sheet IS NOT NULL AND TRIM(source_sheet) <> ''"
             )
         ]
         program_kpis = _compute_program_kpis(conn, where_sql=where_sql, params=params)
@@ -2337,6 +2431,7 @@ def index():
             """
             SELECT status, COUNT(*) as count
             FROM risks
+            WHERE TRIM(COALESCE(deleted_at, '')) = ''
             GROUP BY status
             """
         ).fetchall()
@@ -2553,7 +2648,10 @@ def risk_detail(risk_id: int):
     events_per_page = 25
 
     with get_db_connection() as conn:
-        risk = conn.execute("SELECT * FROM risks WHERE id = ?", (risk_id,)).fetchone()
+        risk = conn.execute(
+            f"SELECT * FROM risks WHERE id = ? AND {_not_deleted_condition()}",
+            (risk_id,),
+        ).fetchone()
 
         events_total = int(
             conn.execute(
@@ -2759,19 +2857,19 @@ def admin_dashboard():
         statuses = [
             row["status"]
             for row in conn.execute(
-                "SELECT DISTINCT TRIM(status) as status FROM risks WHERE status IS NOT NULL AND TRIM(status) <> ''"
+                f"SELECT DISTINCT TRIM(status) as status FROM risks WHERE {_not_deleted_condition()} AND status IS NOT NULL AND TRIM(status) <> ''"
             )
         ]
         severities = [
             row["severity"]
             for row in conn.execute(
-                "SELECT DISTINCT TRIM(severity) as severity FROM risks WHERE severity IS NOT NULL AND TRIM(severity) <> ''"
+                f"SELECT DISTINCT TRIM(severity) as severity FROM risks WHERE {_not_deleted_condition()} AND severity IS NOT NULL AND TRIM(severity) <> ''"
             )
         ]
         assignees = [
             row["assigned_to"]
             for row in conn.execute(
-                "SELECT DISTINCT TRIM(assigned_to) as assigned_to FROM risks WHERE assigned_to IS NOT NULL AND TRIM(assigned_to) <> ''"
+                f"SELECT DISTINCT TRIM(assigned_to) as assigned_to FROM risks WHERE {_not_deleted_condition()} AND assigned_to IS NOT NULL AND TRIM(assigned_to) <> ''"
             )
         ]
         allowed_assignees, _assignee_source = _allowed_assignee_emails()
@@ -2782,6 +2880,7 @@ def admin_dashboard():
             """
             SELECT status, COUNT(*) as count
             FROM risks
+            WHERE TRIM(COALESCE(deleted_at, '')) = ''
             GROUP BY status
             """
         ).fetchall()
@@ -2790,6 +2889,7 @@ def admin_dashboard():
             """
             SELECT COALESCE(severity, 'Unspecified') as severity, COUNT(*) as count
             FROM risks
+            WHERE TRIM(COALESCE(deleted_at, '')) = ''
             GROUP BY COALESCE(severity, 'Unspecified')
             """
         ).fetchall()
@@ -2845,7 +2945,7 @@ def admin_dashboard():
         )
 
     # Queue counts should be stable and global (not dependent on the current filter view).
-    queue_where_sql = ""
+    queue_where_sql = " WHERE " + _not_deleted_condition()
     queue_params: list[object] = []
 
     open_condition = "LOWER(TRIM(COALESCE(status,''))) NOT IN ('closed','archived','mitigated')"
@@ -2968,6 +3068,49 @@ def admin_dashboard():
     )
 
 
+@app.route("/admin/deleted")
+def admin_deleted():
+    if not require_admin():
+        return redirect(url_for("admin"))
+
+    query_text = request.args.get("q", "").strip()
+    page, per_page = _parse_pagination(default_per_page=50)
+
+    filters: list[str] = ["TRIM(COALESCE(deleted_at,'')) <> ''"]
+    params: list[object] = []
+
+    if query_text:
+        filters.append("(LOWER(title) LIKE ? OR LOWER(description) LIKE ?)")
+        like = f"%{query_text.lower()}%"
+        params.extend([like, like])
+
+    where_sql = " WHERE " + " AND ".join(filters)
+    list_query = f"SELECT * FROM risks{where_sql} ORDER BY deleted_at DESC, updated_at DESC LIMIT ? OFFSET ?"
+
+    with get_db_connection() as conn:
+        total = int(conn.execute(f"SELECT COUNT(*) FROM risks{where_sql}", params).fetchone()[0])
+        pager = _pager(total=total, page=page, per_page=per_page)
+        offset = (int(pager["page"]) - 1) * per_page
+        risks = conn.execute(list_query, params + [per_page, offset]).fetchall()
+
+    query_args = {
+        "q": query_text,
+        "per_page": int(pager["per_page"]),
+    }
+    if pager.get("has_prev"):
+        pager["prev_url"] = url_for("admin_deleted", **query_args, page=int(pager["page"]) - 1)
+    if pager.get("has_next"):
+        pager["next_url"] = url_for("admin_deleted", **query_args, page=int(pager["page"]) + 1)
+
+    return render_template(
+        "admin_deleted.html",
+        risks=risks,
+        query_text=query_text,
+        pagination=pager,
+        query_args=query_args,
+    )
+
+
 @app.route("/admin/tasks")
 def admin_tasks():
     if not require_admin():
@@ -2983,6 +3126,9 @@ def admin_tasks():
 
     filters: list[str] = []
     params: list[object] = []
+
+    # Exclude tasks for soft-deleted risks.
+    filters.append(_not_deleted_condition("r"))
 
     if status_filter == "open":
         filters.append("LOWER(TRIM(t.status)) NOT IN ('done','cancelled')")
@@ -3058,6 +3204,10 @@ def admin_heatmap():
     if not require_admin():
         return redirect(url_for("admin"))
 
+    scope = (request.args.get("scope") or "open").strip().lower()
+    if scope not in {"open", "all"}:
+        scope = "open"
+
     levels = ["Very Low", "Low", "Medium", "High", "Very High"]
 
     def to_level(v: str | None) -> int | None:
@@ -3077,13 +3227,31 @@ def admin_heatmap():
     band_counts_residual: dict[str, int] = {"Low": 0, "Medium": 0, "High": 0, "Critical": 0, "Unscored": 0}
 
     with get_db_connection() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) as c FROM risks WHERE TRIM(COALESCE(deleted_at,'')) <> ''"
+        ).fetchone()
+        deleted_excluded = int(row["c"] if row else 0)
+
+        row = conn.execute(
+            "SELECT COUNT(*) as c FROM risks WHERE TRIM(COALESCE(deleted_at,'')) = ''"
+        ).fetchone()
+        not_deleted_total = int(row["c"] if row else 0)
+
+        where = ["TRIM(COALESCE(deleted_at,'')) = ''"]
+        if scope == "open":
+            where.append("LOWER(TRIM(COALESCE(status,''))) NOT IN ('closed','archived','mitigated')")
+
         risks = conn.execute(
             """
-            SELECT id, title, likelihood_initial, impact_initial, likelihood_residual, impact_residual, likelihood, impact
+            SELECT id, title, status, likelihood_initial, impact_initial, likelihood_residual, impact_residual, likelihood, impact
             FROM risks
+            WHERE {where_sql}
             ORDER BY updated_at DESC
-            """.strip()
+            """.strip().format(where_sql=" AND ".join(where)),
         ).fetchall()
+
+    included_total = len(risks)
+    nonopen_excluded = max(0, not_deleted_total - included_total) if scope == "open" else 0
 
     for r in risks:
         li = to_level(r["likelihood_initial"] or r["likelihood"])
@@ -3093,13 +3261,17 @@ def admin_heatmap():
 
         if li is None or ii is None:
             initial_unscored += 1
-        bump(initial_matrix, li, ii)
-        band_counts_initial[_score_band(_score_1_to_25(li, ii))] += 1
+            band_counts_initial["Unscored"] += 1
+        else:
+            bump(initial_matrix, li, ii)
+            band_counts_initial[_score_band(_score_1_to_25(li, ii))] += 1
 
         if lr is None or ir is None:
             residual_unscored += 1
-        bump(residual_matrix, lr, ir)
-        band_counts_residual[_score_band(_score_1_to_25(lr, ir))] += 1
+            band_counts_residual["Unscored"] += 1
+        else:
+            bump(residual_matrix, lr, ir)
+            band_counts_residual[_score_band(_score_1_to_25(lr, ir))] += 1
 
     return render_template(
         "admin_heatmap.html",
@@ -3110,6 +3282,11 @@ def admin_heatmap():
         residual_unscored=residual_unscored,
         band_counts_initial=band_counts_initial,
         band_counts_residual=band_counts_residual,
+        scope=scope,
+        included_total=included_total,
+        not_deleted_total=not_deleted_total,
+        deleted_excluded=deleted_excluded,
+        nonopen_excluded=nonopen_excluded,
     )
 
 
@@ -3163,6 +3340,7 @@ def admin_trends_snapshot():
             """
             SELECT id, likelihood_initial, impact_initial, likelihood_residual, impact_residual, likelihood, impact
             FROM risks
+            WHERE TRIM(COALESCE(deleted_at,'')) = ''
             """.strip()
         ).fetchall()
 
@@ -3227,6 +3405,7 @@ def _send_task_reminders(*, days_ahead: int = 3) -> tuple[int, int]:
             FROM risk_tasks t
             JOIN risks r ON r.id = t.risk_id
             WHERE LOWER(TRIM(t.status)) NOT IN ('done','cancelled')
+                            AND TRIM(COALESCE(r.deleted_at,'')) = ''
               AND TRIM(COALESCE(t.assigned_to,'')) <> ''
               AND TRIM(COALESCE(t.due_date,'')) <> ''
               AND DATE(t.due_date) <= DATE(?, '+' || ? || ' days')
@@ -3578,6 +3757,11 @@ def admin_risk_comment_add(risk_id: int):
             flash("Risk not found.", "warning")
             return redirect(url_for("admin_dashboard"))
 
+        is_deleted = bool((risk["deleted_at"] or "").strip())
+        if request.method == "POST" and is_deleted:
+            flash("This risk is deleted. Restore it before editing.", "warning")
+            return redirect(url_for("admin_risk_detail", risk_id=risk_id))
+
         cur = conn.execute(
             """
             INSERT INTO risk_comments (risk_id, body, author, created_at)
@@ -3710,7 +3894,7 @@ def admin_bulk_update():
     updated_count = 0
     with get_db_connection() as conn:
         existing = conn.execute(
-            f"SELECT * FROM risks WHERE id IN ({','.join('?' for _ in risk_ids)})",
+            f"SELECT * FROM risks WHERE id IN ({','.join('?' for _ in risk_ids)}) AND {_not_deleted_condition()}",
             risk_ids,
         ).fetchall()
         existing_by_id = {int(r["id"]): r for r in existing}
@@ -3767,7 +3951,7 @@ def admin_bulk_update():
             params.append(rid)
 
             conn.execute(
-                f"UPDATE risks SET {', '.join(sets)} WHERE id = ?",
+                f"UPDATE risks SET {', '.join(sets)} WHERE id = ? AND {_not_deleted_condition()}",
                 params,
             )
             updated_count += 1
@@ -3976,6 +4160,9 @@ def admin_export():
 def admin_import():
     if not require_admin():
         return redirect(url_for("admin"))
+
+    if not app.config.get("ENABLE_ADMIN_IMPORT", False):
+        abort(404)
 
     with get_db_connection() as conn:
         conn.execute("DELETE FROM risks WHERE source_sheet IS NOT NULL")
@@ -4312,6 +4499,98 @@ def admin_risk_detail(risk_id: int):
         owners=sorted(set(owners)),
         task_status_options=TASK_STATUS_OPTIONS,
     )
+
+
+@app.route("/admin/risk/<int:risk_id>/delete", methods=["POST"])
+def admin_risk_delete(risk_id: int):
+    if not require_admin():
+        return redirect(url_for("admin"))
+
+    reason = (request.form.get("reason") or "").strip()
+    if len(reason) > 500:
+        reason = reason[:500]
+
+    actor = _current_actor()
+    now = datetime.utcnow().isoformat()
+
+    with get_db_connection() as conn:
+        risk = conn.execute("SELECT * FROM risks WHERE id = ?", (risk_id,)).fetchone()
+        if risk is None:
+            flash("Risk not found.", "warning")
+            return redirect(url_for("admin_dashboard"))
+
+        if (risk["deleted_at"] or "").strip():
+            flash("Risk is already deleted.", "info")
+            return redirect(url_for("admin_risk_detail", risk_id=risk_id))
+
+        conn.execute(
+            """
+            UPDATE risks
+            SET deleted_at = ?, deleted_by = ?, deleted_reason = ?,
+                updated_by = ?, updated_at = ?
+            WHERE id = ?
+            """.strip(),
+            (now, actor, reason, actor, now, risk_id),
+        )
+
+        new_value = now if not reason else f"{now} | {reason}"[:500]
+        _log_event(
+            conn,
+            risk_id=risk_id,
+            event_type="delete",
+            field="deleted_at",
+            old_value="",
+            new_value=new_value,
+            actor=actor,
+        )
+        conn.commit()
+
+    flash("Risk deleted (soft delete).", "success")
+    return redirect(url_for("admin_dashboard"))
+
+
+@app.route("/admin/risk/<int:risk_id>/restore", methods=["POST"])
+def admin_risk_restore(risk_id: int):
+    if not require_admin():
+        return redirect(url_for("admin"))
+
+    actor = _current_actor()
+    now = datetime.utcnow().isoformat()
+
+    with get_db_connection() as conn:
+        risk = conn.execute("SELECT * FROM risks WHERE id = ?", (risk_id,)).fetchone()
+        if risk is None:
+            flash("Risk not found.", "warning")
+            return redirect(url_for("admin_dashboard"))
+
+        old_deleted_at = (risk["deleted_at"] or "").strip()
+        if not old_deleted_at:
+            flash("Risk is not deleted.", "info")
+            return redirect(url_for("admin_risk_detail", risk_id=risk_id))
+
+        conn.execute(
+            """
+            UPDATE risks
+            SET deleted_at = NULL, deleted_by = NULL, deleted_reason = NULL,
+                updated_by = ?, updated_at = ?
+            WHERE id = ?
+            """.strip(),
+            (actor, now, risk_id),
+        )
+
+        _log_event(
+            conn,
+            risk_id=risk_id,
+            event_type="restore",
+            field="deleted_at",
+            old_value=old_deleted_at,
+            new_value="",
+            actor=actor,
+        )
+        conn.commit()
+
+    flash("Risk restored.", "success")
+    return redirect(url_for("admin_risk_detail", risk_id=risk_id))
 
 
 @app.route("/admin/risk/<int:risk_id>/attachments/upload", methods=["POST"])
