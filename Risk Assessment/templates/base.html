@@ -15,6 +15,7 @@
 <body>
     <header class="site-header">
         <div class="container header-content">
+            {% set ep = request.endpoint or '' %}
             <div class="brand">
                 <img class="brand-icon" src="{{ url_for('static', filename='icons/app-icon.png') }}" alt="HDH RISKS" width="40" height="40" />
                 <div class="brand-text">
@@ -22,14 +23,18 @@
                     <p class="subtitle">Capture, review, and mitigate risks</p>
                 </div>
             </div>
-            <nav class="nav-actions">
-                <a href="{{ url_for('index') }}">Risks</a>
-                <a href="{{ url_for('submit') }}">Submit Risk</a>
-                <a href="{{ url_for('admin') }}">Admin</a>
+            <div class="header-controls">
+                <button type="button" class="nav-toggle" id="nav-toggle" aria-controls="site-nav" aria-expanded="false">Menu</button>
+                <button type="button" class="button secondary small" id="compact-toggle" title="Toggle compact mode">Compact</button>
+            </div>
+            <nav class="nav-actions" id="site-nav">
+                <a class="nav-link {% if ep == 'index' %}active{% endif %}" href="{{ url_for('index') }}" {% if ep == 'index' %}aria-current="page"{% endif %}>Risks</a>
+                <a class="nav-link {% if ep == 'submit' %}active{% endif %}" href="{{ url_for('submit') }}" {% if ep == 'submit' %}aria-current="page"{% endif %}>Submit Risk</a>
+                <a class="nav-link {% if ep.startswith('admin') %}active{% endif %}" href="{{ url_for('admin') }}" {% if ep.startswith('admin') %}aria-current="page"{% endif %}>Admin</a>
                 {% if session.get('is_admin') or (session.get('user') and session['user'].get('is_admin')) %}
-                    <a href="{{ url_for('admin_tasks') }}">Tasks</a>
-                    <a href="{{ url_for('admin_heatmap') }}">Heatmap</a>
-                    <a href="{{ url_for('admin_trends') }}">Trends</a>
+                    <a class="nav-link {% if ep == 'admin_tasks' %}active{% endif %}" href="{{ url_for('admin_tasks') }}" {% if ep == 'admin_tasks' %}aria-current="page"{% endif %}>Tasks</a>
+                    <a class="nav-link {% if ep == 'admin_heatmap' %}active{% endif %}" href="{{ url_for('admin_heatmap') }}" {% if ep == 'admin_heatmap' %}aria-current="page"{% endif %}>Heatmap</a>
+                    <a class="nav-link {% if ep == 'admin_trends' %}active{% endif %}" href="{{ url_for('admin_trends') }}" {% if ep == 'admin_trends' %}aria-current="page"{% endif %}>Trends</a>
                 {% endif %}
                 {% if session.get('user') %}
                     <span class="nav-user" title="Signed in">{{ session['user'].get('preferred_username') or session['user'].get('name') }}</span>
@@ -60,6 +65,77 @@
             <span class="muted">Version {{ config.get('APP_VERSION', 'dev') }}</span>
         </div>
     </footer>
+
+    <script>
+        (function () {
+            const root = document.documentElement;
+
+            // Compact mode (persisted)
+            const compactKey = 'risk_ui_compact_v1';
+            try {
+                if (localStorage.getItem(compactKey) === '1') {
+                    root.classList.add('compact');
+                }
+            } catch (e) {
+                // ignore
+            }
+
+            const compactToggle = document.getElementById('compact-toggle');
+            if (compactToggle) {
+                compactToggle.addEventListener('click', function () {
+                    const enabled = root.classList.toggle('compact');
+                    try {
+                        localStorage.setItem(compactKey, enabled ? '1' : '0');
+                    } catch (e) {
+                        // ignore
+                    }
+                });
+            }
+
+            // Mobile nav menu
+            const navToggle = document.getElementById('nav-toggle');
+            const nav = document.getElementById('site-nav');
+            if (navToggle && nav) {
+                navToggle.addEventListener('click', function () {
+                    const opened = root.classList.toggle('nav-open');
+                    navToggle.setAttribute('aria-expanded', opened ? 'true' : 'false');
+                });
+
+                // Close after navigation
+                nav.addEventListener('click', function (e) {
+                    const a = e.target && e.target.closest ? e.target.closest('a') : null;
+                    if (!a) return;
+                    root.classList.remove('nav-open');
+                    navToggle.setAttribute('aria-expanded', 'false');
+                });
+            }
+
+            // Sticky bar + sticky table header stacking
+            // If a page has a .sticky-bar, move sticky table headers below it.
+            const stickyBar = document.querySelector('.sticky-bar');
+            if (stickyBar) {
+                const extraGap = 12;
+                function readPxVar(name) {
+                    const raw = getComputedStyle(root).getPropertyValue(name);
+                    const n = parseInt(String(raw || '').trim(), 10);
+                    return Number.isFinite(n) ? n : 0;
+                }
+                function updateStickyStackOffset() {
+                    const barOffset = readPxVar('--sticky-bar-offset');
+                    const barHeight = stickyBar.offsetHeight || 0;
+                    root.style.setProperty('--sticky-stack-offset', String(barOffset + barHeight + extraGap) + 'px');
+                }
+
+                updateStickyStackOffset();
+                window.addEventListener('resize', updateStickyStackOffset, { passive: true });
+
+                if (window.ResizeObserver) {
+                    const ro = new ResizeObserver(updateStickyStackOffset);
+                    ro.observe(stickyBar);
+                }
+            }
+        })();
+    </script>
 
 </body>
 </html>

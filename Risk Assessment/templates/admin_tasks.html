@@ -12,53 +12,73 @@
         </div>
     </div>
 
-    <form method="get" action="{{ url_for('admin_tasks') }}" class="form">
-        <div class="form-grid">
-            <label>
-                Status
-                <select name="status">
-                    <option value="all" {% if status_filter == 'all' %}selected{% endif %}>All</option>
-                    <option value="open" {% if status_filter == 'open' %}selected{% endif %}>Open</option>
-                    <option value="done" {% if status_filter == 'done' %}selected{% endif %}>Done</option>
-                    <option value="cancelled" {% if status_filter == 'cancelled' %}selected{% endif %}>Cancelled</option>
-                </select>
-            </label>
-            <label>
-                Assigned
-                <select name="assigned">
-                    <option value="all" {% if assignee_filter == 'all' %}selected{% endif %}>All</option>
-                    <option value="me" {% if assignee_filter == 'me' %}selected{% endif %}>Me</option>
-                    <option value="unassigned" {% if assignee_filter == 'unassigned' %}selected{% endif %}>Unassigned</option>
-                </select>
-            </label>
-            <label>
-                Due
-                <select name="due">
-                    <option value="all" {% if due_filter == 'all' %}selected{% endif %}>All</option>
-                    <option value="overdue" {% if due_filter == 'overdue' %}selected{% endif %}>Overdue</option>
-                    <option value="due_7" {% if due_filter == 'due_7' %}selected{% endif %}>Due in 7 days</option>
-                    <option value="due_30" {% if due_filter == 'due_30' %}selected{% endif %}>Due in 30 days</option>
-                    <option value="no_due" {% if due_filter == 'no_due' %}selected{% endif %}>No due date</option>
-                </select>
-            </label>
-            <label style="grid-column: 1 / -1;">
-                Search
-                <input type="text" name="q" value="{{ query_text }}" placeholder="Task title, notes, or risk title" />
-            </label>
-        </div>
-        <div class="button-row" style="margin-top: 12px;">
-            <button type="submit">Apply filters</button>
-            <a class="button secondary" href="{{ url_for('admin_tasks') }}">Reset</a>
-            <span class="muted" style="align-self:center;">{{ tasks|length }} task(s)</span>
-        </div>
-    </form>
+    <div class="sticky-bar" aria-label="Task filters">
+        <form method="get" action="{{ url_for('admin_tasks') }}" class="form" style="margin: 0;">
+            <div class="form-grid">
+                <label>
+                    Status
+                    <select name="status">
+                        <option value="all" {% if status_filter == 'all' %}selected{% endif %}>All</option>
+                        <option value="open" {% if status_filter == 'open' %}selected{% endif %}>Open</option>
+                        <option value="done" {% if status_filter == 'done' %}selected{% endif %}>Done</option>
+                        <option value="cancelled" {% if status_filter == 'cancelled' %}selected{% endif %}>Cancelled</option>
+                    </select>
+                </label>
+                <label>
+                    Assigned
+                    <select name="assigned">
+                        <option value="all" {% if assignee_filter == 'all' %}selected{% endif %}>All</option>
+                        <option value="me" {% if assignee_filter == 'me' %}selected{% endif %}>Me</option>
+                        <option value="unassigned" {% if assignee_filter == 'unassigned' %}selected{% endif %}>Unassigned</option>
+                    </select>
+                </label>
+                <label>
+                    Due
+                    <select name="due">
+                        <option value="all" {% if due_filter == 'all' %}selected{% endif %}>All</option>
+                        <option value="overdue" {% if due_filter == 'overdue' %}selected{% endif %}>Overdue</option>
+                        <option value="due_7" {% if due_filter == 'due_7' %}selected{% endif %}>Due in 7 days</option>
+                        <option value="due_30" {% if due_filter == 'due_30' %}selected{% endif %}>Due in 30 days</option>
+                        <option value="no_due" {% if due_filter == 'no_due' %}selected{% endif %}>No due date</option>
+                    </select>
+                </label>
+                <label class="grid-span-full">
+                    Search
+                    <input type="text" name="q" value="{{ query_text }}" placeholder="Task title, notes, or risk title" />
+                </label>
+            </div>
+            <div class="button-row mt-12">
+                <button type="submit">Apply filters</button>
+                <a class="button secondary" href="{{ url_for('admin_tasks') }}">Reset</a>
+                <span class="muted" style="align-self:center;">{{ tasks|length }} task(s)</span>
+            </div>
 
-    <div class="section-block" style="margin-top: 12px;">
+            {% if status_filter != 'all' or assignee_filter != 'all' or due_filter != 'all' or (query_text|trim) %}
+                <div class="chips mt-10" aria-label="Active filters">
+                    {% if status_filter != 'all' %}
+                        <span class="chip">Status: {{ status_filter }}</span>
+                    {% endif %}
+                    {% if assignee_filter != 'all' %}
+                        <span class="chip">Assigned: {{ assignee_filter }}</span>
+                    {% endif %}
+                    {% if due_filter != 'all' %}
+                        <span class="chip">Due: {{ due_filter }}</span>
+                    {% endif %}
+                    {% if query_text|trim %}
+                        <span class="chip">Search: {{ query_text }}</span>
+                    {% endif %}
+                    <span class="chip"><a href="{{ url_for('admin_tasks') }}">Clear all <span class="chip-x">×</span></a></span>
+                </div>
+            {% endif %}
+        </form>
+    </div>
+
+    <div class="section-block mt-12">
         <div class="section-title">
             <h3>Reminders</h3>
             <p class="subtitle">Email task reminders to assignees for tasks due soon (including overdue).</p>
         </div>
-        <form method="post" action="{{ url_for('admin_send_task_reminders') }}" class="form" style="margin-top: 10px;">
+        <form method="post" action="{{ url_for('admin_send_task_reminders') }}" class="form mt-10">
             <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
             <div class="form-grid">
                 <label>
@@ -66,13 +86,13 @@
                     <input type="number" name="days_ahead" min="0" max="60" step="1" value="3" />
                 </label>
             </div>
-            <div class="button-row" style="margin-top: 10px;">
+            <div class="button-row mt-10">
                 <button type="submit">Send reminders</button>
             </div>
         </form>
     </div>
 
-    <div class="section-block" style="margin-top: 12px;">
+    <div class="section-block mt-12">
         <div class="section-title">
             <h3>Task list</h3>
             <p class="subtitle">Today: {{ today }}</p>

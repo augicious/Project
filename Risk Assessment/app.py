@@ -8,13 +8,14 @@ import uuid
 import smtplib
 import secrets
 import time
-from datetime import datetime
+import logging
+from datetime import datetime, timezone
 from functools import wraps
 from pathlib import Path
 from urllib.parse import urlencode
 from email.message import EmailMessage
 
-from flask import Flask, abort, redirect, render_template, request, session, url_for, flash, send_file, send_from_directory # type: ignore
+from flask import Flask, abort, redirect, render_template, request, session, url_for, flash, send_file, send_from_directory, g # type: ignore
 from openpyxl import load_workbook
 import requests
 from werkzeug.middleware.proxy_fix import ProxyFix
@@ -32,6 +33,8 @@ DEFAULT_RISK_REGISTER = BASE_DIR / "Risk Register.xlsx"
 UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", str(DATA_DIR / "uploads")))
 ARCHIVE_DIR = Path(os.getenv("ATTACHMENT_ARCHIVE_DIR", str(DATA_DIR / "uploads_archive")))
 
+APP_START_TIME = time.time()
+
 DEFAULT_MAX_UPLOAD_MB = 15
 try:
     _max_mb = int(float(os.getenv("UPLOAD_MAX_MB", str(DEFAULT_MAX_UPLOAD_MB))))
@@ -47,6 +50,81 @@ try:
     ARCHIVE_AFTER_DAYS = int(float(os.getenv("ATTACHMENT_ARCHIVE_AFTER_DAYS", str(DEFAULT_ARCHIVE_AFTER_DAYS))))
 except ValueError:
     ARCHIVE_AFTER_DAYS = DEFAULT_ARCHIVE_AFTER_DAYS
+
+
+# -----------------------------------------------------------------------------
+# Compatibility shims
+#
+# The service log shows some deployments running older app versions where admin
+# analytics helpers (heatmap/trends/snapshots) were missing, causing NameError at
+# request time. Defining safe fallbacks here keeps admin pages functional and
+# prevents production crashes. Later definitions (if present) will override these.
+# -----------------------------------------------------------------------------
+
+
+def _today_ymd() -> str:  # pragma: no cover
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+def _rating_1_to_5(value: str | None) -> int | None:  # pragma: no cover
+    text = (value or "").strip().lower()
+    if not text:
+        return None
+    mapping = {
+        "very low": 1,
+        "low": 2,
+        "medium": 3,
+        "high": 4,
+        "very high": 5,
+        "critical": 5,
+    }
+    if text in mapping:
+        return mapping[text]
+
+    try:
+        n = int(float(text))
+    except Exception:
+        return None
+
+    if n <= 0:
+        return None
+    if 1 <= n <= 5:
+        return n
+    if 1 <= n <= 10:
+        return int((n + 1) // 2)
+    return None
+
+
+def _score_1_to_25(likelihood: int | None, impact: int | None) -> int | None:  # pragma: no cover
+    if likelihood is None or impact is None:
+        return None
+    try:
+        l = int(likelihood)
+        i = int(impact)
+    except Exception:
+        return None
+    if l <= 0 or i <= 0:
+        return None
+    score = l * i
+    return min(25, max(1, score))
+
+
+def _score_band(score: int | None) -> str:  # pragma: no cover
+    if score is None:
+        return "Unscored"
+    try:
+        s = int(score)
+    except Exception:
+        return "Unscored"
+    if s <= 0:
+        return "Unscored"
+    if s <= 3:
+        return "Low"
+    if s <= 8:
+        return "Medium"
+    if s <= 12:
+        return "High"
+    return "Critical"
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -247,9 +325,66 @@ app.config["RISK_REGISTER_PATH"] = Path(
 )
 app.config["DB_INITIALIZED"] = False
 app.config["ENABLE_ADMIN_IMPORT"] = _env_bool("ENABLE_ADMIN_IMPORT", False)
+app.config["SEED_FROM_EXCEL_ON_STARTUP"] = _env_bool("SEED_FROM_EXCEL_ON_STARTUP", False)
 
 # Trust reverse-proxy headers (IIS/ARR) so redirects and OAuth callbacks work behind HTTPS.
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
+
+
+def _request_logging_enabled() -> bool:
+    return _env_bool("REQUEST_LOGGING_ENABLED", True)
+
+
+def _request_context_init():
+    try:
+        incoming = (request.headers.get("X-Request-ID") or "").strip()
+    except Exception:
+        incoming = ""
+    g.request_id = incoming[:64] if incoming else uuid.uuid4().hex
+    g.request_started_at = time.time()
+    return None
+
+
+def _request_log_and_headers(response):
+    try:
+        rid = getattr(g, "request_id", "-")
+        response.headers.setdefault("X-Request-ID", str(rid))
+
+        if not _request_logging_enabled():
+            return response
+        if request.path.startswith("/static/"):
+            return response
+        if request.path == "/_health" and not _env_bool("LOG_HEALTH_REQUESTS", False):
+            return response
+
+        started = getattr(g, "request_started_at", None)
+        duration_ms = int(max(0.0, (time.time() - float(started))) * 1000) if started else None
+
+        user = session.get("user") or {}
+        user_id = (user.get("oid") or user.get("sub") or "").strip() or "-"
+        is_admin = bool(session.get("is_admin"))
+
+        status = int(getattr(response, "status_code", 0) or 0)
+        level = logging.ERROR if status >= 500 else logging.INFO
+        app.logger.log(
+            level,
+            "%s %s %s status=%s dur_ms=%s user=%s admin=%s",
+            request.method,
+            request.path,
+            request.remote_addr,
+            status,
+            duration_ms if duration_ms is not None else "-",
+            user_id,
+            is_admin,
+        )
+    except Exception:
+        # Never break responses due to logging.
+        pass
+    return response
+
+
+app.before_request(_request_context_init)
+app.after_request(_request_log_and_headers)
 
 
 @app.get("/favicon.ico")
@@ -1259,7 +1394,9 @@ def _where_join(base_where_sql: str, condition_sql: str) -> str:
 
 def _not_deleted_condition(table_alias: str | None = None) -> str:
     col = f"{table_alias}.deleted_at" if table_alias else "deleted_at"
-    return f"TRIM(COALESCE({col}, '')) = ''"
+    # Avoid wrapping the column in functions so SQLite can use indexes.
+    # Note: legacy data may store empty string instead of NULL.
+    return f"({col} IS NULL OR {col} = '')"
 
 
 def _normalize_header(header: str) -> str:
@@ -1361,7 +1498,7 @@ def seed_from_excel(force: bool = False) -> int:
         return ""
 
     inserted = 0
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
     with get_db_connection() as conn:
         for sheet_name in workbook.sheetnames:
             if sheet_name.strip().lower() == "kpi":
@@ -1632,15 +1769,52 @@ def _parse_date(value: str | None) -> datetime | None:
         pass
 
     # Try ISO formats (with or without Z).
+    # Normalize to naive UTC to keep consistent behavior across the app.
     try:
         cleaned = text.replace("Z", "+00:00")
-        return datetime.fromisoformat(cleaned)
+        parsed = datetime.fromisoformat(cleaned)
+        if parsed.tzinfo is None:
+            return parsed
+        return parsed.astimezone(timezone.utc).replace(tzinfo=None)
     except Exception:
         return None
 
 
+def _parse_ymd(value: str | None) -> str | None:
+    """Parse a date input and return YYYY-MM-DD (or None).
+
+    Used for due dates and other date-only fields.
+    """
+
+    text = (value or "").strip()
+    if not text:
+        return None
+    parsed = _parse_date(text)
+    if not parsed:
+        return None
+    return parsed.date().isoformat()
+
+
+def _normalize_task_status(value: str | None, *, default: str = "Open") -> str:
+    """Normalize a task status to a known option."""
+
+    lookup = {opt.strip().lower(): opt for opt in TASK_STATUS_OPTIONS}
+    text = (value or "").strip().lower()
+    if not text:
+        return lookup.get(default.strip().lower(), "Open")
+
+    if text in lookup:
+        return lookup[text]
+
+    simplified = " ".join(text.replace("_", " ").split())
+    if simplified in lookup:
+        return lookup[simplified]
+
+    return lookup.get(default.strip().lower(), "Open")
+
+
 def _today_ymd() -> str:
-    return datetime.utcnow().strftime("%Y-%m-%d")
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
 def _compute_kpi_metrics(*, risks: list[sqlite3.Row]) -> dict[str, dict[str, str]]:
@@ -1742,7 +1916,7 @@ def _compute_kpi_metrics(*, risks: list[sqlite3.Row]) -> dict[str, dict[str, str
             "notes": f"Average time from identification to mitigation across {count_days} completed risks.",
         }
     else:
-        today = datetime.utcnow()
+        today = datetime.now(timezone.utc).replace(tzinfo=None)
         open_days_total = 0
         open_days_count = 0
         for risk in risks:
@@ -1780,7 +1954,7 @@ def _import_kpis(workbook) -> None:
         if not rows:
             return
 
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
         to_insert: list[tuple[str, str, str]] = []
         for row in rows:
             if not row:
@@ -2022,7 +2196,7 @@ def _log_event(
     new_value: str | None = None,
     actor: str | None = None,
 ) -> None:
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
     conn.execute(
         """
         INSERT INTO risk_events (risk_id, event_type, field, old_value, new_value, actor, created_at)
@@ -2251,7 +2425,7 @@ def _compute_program_kpis(
         params + completed_statuses,
     ).fetchall()
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
     overdue_reviews = 0
     unassigned_breaches_24h = 0
     for row in open_review_rows:
@@ -2358,7 +2532,8 @@ def _compute_program_kpis(
 def setup() -> None:
     if not app.config["DB_INITIALIZED"]:
         init_db()
-        seed_from_excel()
+        if app.config.get("SEED_FROM_EXCEL_ON_STARTUP", False):
+            seed_from_excel()
         app.config["DB_INITIALIZED"] = True
     if "admin_import" not in app.view_functions:
         def _admin_import_stub():
@@ -2431,7 +2606,7 @@ def index():
             """
             SELECT status, COUNT(*) as count
             FROM risks
-            WHERE TRIM(COALESCE(deleted_at, '')) = ''
+            WHERE (deleted_at IS NULL OR deleted_at = '')
             GROUP BY status
             """
         ).fetchall()
@@ -2465,10 +2640,44 @@ def index():
 
 @app.route("/_health")
 def health():
-    return {
+    checks: dict[str, object] = {
         "version": app.config.get("APP_VERSION"),
         "admin_import": "admin_import" in app.view_functions,
+        "now_utc": datetime.now(timezone.utc).isoformat(),
+        "uptime_s": int(max(0.0, time.time() - APP_START_TIME)),
     }
+
+    ok = True
+    try:
+        with get_db_connection() as conn:
+            conn.execute("SELECT 1").fetchone()
+        checks["db_ok"] = True
+    except Exception as exc:
+        ok = False
+        checks["db_ok"] = False
+        checks["db_error"] = str(exc)
+
+    def _dir_check(path: Path) -> dict[str, object]:
+        try:
+            exists = path.exists()
+            is_dir = path.is_dir() if exists else False
+            writable = bool(os.access(path, os.W_OK)) if exists and is_dir else False
+            return {"path": str(path), "exists": exists, "is_dir": is_dir, "writable": writable}
+        except Exception as exc:
+            return {"path": str(path), "error": str(exc)}
+
+    checks["data_dir"] = _dir_check(DATA_DIR)
+    checks["upload_dir"] = _dir_check(UPLOAD_DIR)
+    checks["archive_dir"] = _dir_check(ARCHIVE_DIR)
+
+    for key in ("data_dir", "upload_dir", "archive_dir"):
+        info = checks.get(key)
+        if isinstance(info, dict) and info.get("exists") and info.get("is_dir") and info.get("writable"):
+            continue
+        ok = False
+
+    checks["ok"] = ok
+    return checks, (200 if ok else 503)
 
 
 @app.route("/submit", methods=["GET", "POST"])
@@ -2491,7 +2700,7 @@ def submit():
             flash("Title and description are required.", "danger")
             return render_template("submit.html")
 
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
         try:
             priority = int(float(priority_text)) if priority_text else None
         except ValueError:
@@ -2728,9 +2937,9 @@ def admin_archive_closed_attachments():
     except ValueError:
         days = ARCHIVE_AFTER_DAYS
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
     cutoff = now.timestamp() - max(0, days) * 86400
-    cutoff_iso = datetime.utcfromtimestamp(cutoff).isoformat()
+    cutoff_iso = datetime.fromtimestamp(cutoff, tz=timezone.utc).replace(tzinfo=None).isoformat()
 
     moved = 0
     flagged = 0
@@ -2880,7 +3089,7 @@ def admin_dashboard():
             """
             SELECT status, COUNT(*) as count
             FROM risks
-            WHERE TRIM(COALESCE(deleted_at, '')) = ''
+            WHERE (deleted_at IS NULL OR deleted_at = '')
             GROUP BY status
             """
         ).fetchall()
@@ -2889,7 +3098,7 @@ def admin_dashboard():
             """
             SELECT COALESCE(severity, 'Unspecified') as severity, COUNT(*) as count
             FROM risks
-            WHERE TRIM(COALESCE(deleted_at, '')) = ''
+            WHERE (deleted_at IS NULL OR deleted_at = '')
             GROUP BY COALESCE(severity, 'Unspecified')
             """
         ).fetchall()
@@ -3076,7 +3285,7 @@ def admin_deleted():
     query_text = request.args.get("q", "").strip()
     page, per_page = _parse_pagination(default_per_page=50)
 
-    filters: list[str] = ["TRIM(COALESCE(deleted_at,'')) <> ''"]
+    filters: list[str] = ["(deleted_at IS NOT NULL AND deleted_at <> '')"]
     params: list[object] = []
 
     if query_text:
@@ -3228,16 +3437,16 @@ def admin_heatmap():
 
     with get_db_connection() as conn:
         row = conn.execute(
-            "SELECT COUNT(*) as c FROM risks WHERE TRIM(COALESCE(deleted_at,'')) <> ''"
+            "SELECT COUNT(*) as c FROM risks WHERE (deleted_at IS NOT NULL AND deleted_at <> '')"
         ).fetchone()
         deleted_excluded = int(row["c"] if row else 0)
 
         row = conn.execute(
-            "SELECT COUNT(*) as c FROM risks WHERE TRIM(COALESCE(deleted_at,'')) = ''"
+            "SELECT COUNT(*) as c FROM risks WHERE (deleted_at IS NULL OR deleted_at = '')"
         ).fetchone()
         not_deleted_total = int(row["c"] if row else 0)
 
-        where = ["TRIM(COALESCE(deleted_at,'')) = ''"]
+        where = ["(deleted_at IS NULL OR deleted_at = '')"]
         if scope == "open":
             where.append("LOWER(TRIM(COALESCE(status,''))) NOT IN ('closed','archived','mitigated')")
 
@@ -3331,16 +3540,16 @@ def admin_trends_snapshot():
         return redirect(url_for("admin"))
 
     actor = _current_actor()
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
     snap_date = _today_ymd()
 
     inserted = 0
     with get_db_connection() as conn:
         risks = conn.execute(
-            """
+            f"""
             SELECT id, likelihood_initial, impact_initial, likelihood_residual, impact_residual, likelihood, impact
             FROM risks
-            WHERE TRIM(COALESCE(deleted_at,'')) = ''
+            WHERE {_not_deleted_condition()}
             """.strip()
         ).fetchall()
 
@@ -3390,11 +3599,11 @@ def _send_task_reminders(*, days_ahead: int = 3) -> tuple[int, int]:
     """
 
     days_ahead = max(0, min(int(days_ahead), 60))
-    cutoff = datetime.utcnow().date().isoformat()
+    cutoff = datetime.now(timezone.utc).date().isoformat()
 
     with get_db_connection() as conn:
         rows = conn.execute(
-            """
+            f"""
             SELECT
                 t.id as task_id,
                 t.risk_id as risk_id,
@@ -3405,7 +3614,7 @@ def _send_task_reminders(*, days_ahead: int = 3) -> tuple[int, int]:
             FROM risk_tasks t
             JOIN risks r ON r.id = t.risk_id
             WHERE LOWER(TRIM(t.status)) NOT IN ('done','cancelled')
-                            AND TRIM(COALESCE(r.deleted_at,'')) = ''
+              AND {_not_deleted_condition('r')}
               AND TRIM(COALESCE(t.assigned_to,'')) <> ''
               AND TRIM(COALESCE(t.due_date,'')) <> ''
               AND DATE(t.due_date) <= DATE(?, '+' || ? || ' days')
@@ -3423,7 +3632,6 @@ def _send_task_reminders(*, days_ahead: int = 3) -> tuple[int, int]:
 
         base_url = os.getenv("APP_BASE_URL", "").strip() or request.url_root.rstrip("/")
         actor = _current_actor()
-        now = datetime.utcnow().isoformat()
         recipients_sent = 0
         tasks_in_emails = 0
 
@@ -3510,7 +3718,7 @@ def admin_task_add(risk_id: int):
         assigned_to = normalized
 
     actor = _current_actor()
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
 
     with get_db_connection() as conn:
         exists = conn.execute("SELECT 1 FROM risks WHERE id = ?", (risk_id,)).fetchone()
@@ -3563,7 +3771,7 @@ def admin_task_set_status(task_id: int):
 
     status = _normalize_task_status(request.form.get("status"))
     actor = _current_actor()
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
 
     with get_db_connection() as conn:
         task = conn.execute("SELECT * FROM risk_tasks WHERE id = ?", (task_id,)).fetchone()
@@ -3614,7 +3822,7 @@ def admin_task_delete(task_id: int):
         return redirect(url_for("admin"))
 
     actor = _current_actor()
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
 
     with get_db_connection() as conn:
         task = conn.execute("SELECT * FROM risk_tasks WHERE id = ?", (task_id,)).fetchone()
@@ -3656,7 +3864,7 @@ def admin_risk_watchers_add(risk_id: int):
         return redirect(url_for("admin_risk_detail", risk_id=risk_id) + "#comments")
 
     actor = _current_actor()
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
     added = 0
 
     with get_db_connection() as conn:
@@ -3706,7 +3914,7 @@ def admin_risk_watchers_remove(risk_id: int, watcher_id: int):
         return redirect(url_for("admin"))
 
     actor = _current_actor()
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
 
     with get_db_connection() as conn:
         row = conn.execute(
@@ -3749,7 +3957,7 @@ def admin_risk_comment_add(risk_id: int):
         return redirect(url_for("admin_risk_detail", risk_id=risk_id) + "#comments")
 
     actor = _current_actor()
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
 
     with get_db_connection() as conn:
         risk = conn.execute("SELECT * FROM risks WHERE id = ?", (risk_id,)).fetchone()
@@ -3889,7 +4097,7 @@ def admin_bulk_update():
         return redirect(return_to or url_for("admin_dashboard"))
 
     actor = _current_actor()
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
     base_url = os.getenv("APP_BASE_URL", "").strip() or request.url_root.rstrip("/")
     updated_count = 0
     with get_db_connection() as conn:
@@ -4359,7 +4567,7 @@ def admin_risk_detail(risk_id: int):
 
             actor = _current_actor()
 
-            now = datetime.utcnow().isoformat()
+            now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
 
             def _as_str(value) -> str:
                 return ("" if value is None else str(value)).strip()
@@ -4511,7 +4719,7 @@ def admin_risk_delete(risk_id: int):
         reason = reason[:500]
 
     actor = _current_actor()
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
 
     with get_db_connection() as conn:
         risk = conn.execute("SELECT * FROM risks WHERE id = ?", (risk_id,)).fetchone()
@@ -4555,7 +4763,7 @@ def admin_risk_restore(risk_id: int):
         return redirect(url_for("admin"))
 
     actor = _current_actor()
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
 
     with get_db_connection() as conn:
         risk = conn.execute("SELECT * FROM risks WHERE id = ?", (risk_id,)).fetchone()
@@ -4604,7 +4812,7 @@ def admin_upload_attachments(risk_id: int):
         return redirect(url_for("admin_risk_detail", risk_id=risk_id))
 
     actor = _current_actor()
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
     risk_dir = _risk_upload_path(risk_id)
     risk_dir.mkdir(parents=True, exist_ok=True)
 
@@ -4676,7 +4884,7 @@ def admin_delete_attachment(risk_id: int, attachment_id: int):
         return redirect(url_for("admin"))
 
     actor = _current_actor()
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
 
     with get_db_connection() as conn:
         attachment = conn.execute(
@@ -4729,7 +4937,8 @@ def admin_delete_attachment(risk_id: int, attachment_id: int):
 
 if __name__ == "__main__":
     init_db()
-    seed_from_excel()
+    if app.config.get("SEED_FROM_EXCEL_ON_STARTUP", False):
+        seed_from_excel()
     app.run(
         host=os.getenv("FLASK_HOST", "0.0.0.0"),
         port=int(os.getenv("FLASK_PORT", "5000")),

@@ -132,44 +132,65 @@
         {% endif %}
     </details>
 
-
     <form class="bulk-actions" method="post" action="{{ url_for('admin_bulk_update') }}">
             <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
         <input type="hidden" name="return_to" value="{{ request.full_path }}" />
-        <div class="bulk-row">
-            <label>
-                Bulk Status
-                <select name="bulk_status">
-                    <option value="">No change</option>
-                    {% for option in ['New', 'In Review', 'In Progress', 'Postponed', 'Mitigated', 'Archived', 'Closed'] %}
-                        <option value="{{ option }}">{{ option }}</option>
-                    {% endfor %}
-                </select>
-            </label>
-            <label>
-                Bulk Severity
-                <select name="bulk_severity">
-                    <option value="">No change</option>
-                    {% for sev in severities %}
-                        <option value="{{ sev }}">{{ sev }}</option>
-                    {% endfor %}
-                </select>
-            </label>
-            <label>
-                Bulk Assignee
-                <input type="email" name="bulk_assigned_to" placeholder="name@hdh.org" autocomplete="email" inputmode="email" list="assignee-options" />
-            </label>
-            <label class="bulk-inline">
-                <span>Clear assignee</span>
-                <input type="checkbox" name="bulk_clear_assigned_to" value="1" />
-            </label>
-            <label>
-                Bulk Close Reason
-                <input type="text" name="bulk_close_reason" placeholder="Required if setting Closed" />
-            </label>
-            <div class="bulk-cta">
-                <div class="bulk-count"><span id="selected-count">0</span> selected</div>
-                <button type="submit" id="bulk-apply" disabled>Apply to selected</button>
+        <div class="sticky-bar" aria-label="Dashboard actions">
+            <details class="details" id="admin-columns" open>
+                <summary>Columns</summary>
+                <p class="subtitle">Show/hide fields for a denser triage view (stored in this browser).</p>
+                <div class="chips" style="margin-bottom: 10px;">
+                    <button type="button" class="button secondary small" data-col-preset="default">Default</button>
+                    <button type="button" class="button secondary small" data-col-preset="triage">Triage</button>
+                    <button type="button" class="button secondary small" data-col-preset="minimal">Minimal</button>
+                </div>
+                <div class="form-grid" style="grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));">
+                    <label><input type="checkbox" data-col-toggle="severity" checked /> Severity</label>
+                    <label><input type="checkbox" data-col-toggle="status" checked /> Status</label>
+                    <label><input type="checkbox" data-col-toggle="assigned" checked /> Assigned</label>
+                    <label><input type="checkbox" data-col-toggle="owner" checked /> Owner</label>
+                    <label><input type="checkbox" data-col-toggle="priority" checked /> Priority</label>
+                    <label><input type="checkbox" data-col-toggle="progress" checked /> Progress</label>
+                    <label><input type="checkbox" data-col-toggle="identified" checked /> Identified</label>
+                    <label><input type="checkbox" data-col-toggle="updated" checked /> Updated</label>
+                </div>
+            </details>
+
+            <div class="bulk-row" aria-label="Bulk update">
+                <label>
+                    Bulk Status
+                    <select name="bulk_status">
+                        <option value="">No change</option>
+                        {% for option in ['New', 'In Review', 'In Progress', 'Postponed', 'Mitigated', 'Archived', 'Closed'] %}
+                            <option value="{{ option }}">{{ option }}</option>
+                        {% endfor %}
+                    </select>
+                </label>
+                <label>
+                    Bulk Severity
+                    <select name="bulk_severity">
+                        <option value="">No change</option>
+                        {% for sev in severities %}
+                            <option value="{{ sev }}">{{ sev }}</option>
+                        {% endfor %}
+                    </select>
+                </label>
+                <label>
+                    Bulk Assignee
+                    <input type="email" name="bulk_assigned_to" placeholder="name@hdh.org" autocomplete="email" inputmode="email" list="assignee-options" />
+                </label>
+                <label class="bulk-inline">
+                    <span>Clear assignee</span>
+                    <input type="checkbox" name="bulk_clear_assigned_to" value="1" />
+                </label>
+                <label>
+                    Bulk Close Reason
+                    <input type="text" name="bulk_close_reason" placeholder="Required if setting Closed" />
+                </label>
+                <div class="bulk-cta">
+                    <div class="bulk-count"><span id="selected-count">0</span> selected</div>
+                    <button type="submit" id="bulk-apply" disabled>Apply to selected</button>
+                </div>
             </div>
         </div>
 
@@ -179,48 +200,50 @@
             {% endfor %}
         </datalist>
 
-        <div class="table">
-        <div class="table-row table-header admin-list">
-            <div class="select-cell">
-                <input type="checkbox" id="select-all" title="Select all" />
+        <div class="table-wrap admin-dashboard-table" id="admin-dashboard-table" aria-label="Admin risk review list">
+            <div class="table">
+            <div class="table-row table-header admin-list">
+                <div class="select-cell" data-col="select">
+                    <input type="checkbox" id="select-all" title="Select all" />
+                </div>
+                <div data-col="title">Title</div>
+                <div data-col="severity">Severity</div>
+                <div data-col="status">Status</div>
+                <div data-col="assigned">Assigned</div>
+                <div data-col="owner">Owner</div>
+                <div data-col="priority">Priority</div>
+                <div data-col="progress">Progress</div>
+                <div data-col="identified">Identified</div>
+                <div data-col="updated">Updated</div>
             </div>
-            <div>Title</div>
-            <div>Severity</div>
-            <div>Status</div>
-            <div>Assigned</div>
-            <div>Owner</div>
-            <div>Priority</div>
-            <div>Progress</div>
-            <div>Identified</div>
-            <div>Updated</div>
-        </div>
-        {% for risk in risks %}
-            <div class="table-row admin-list">
-                <div class="select-cell">
-                    <input type="checkbox" name="risk_id" value="{{ risk['id'] }}" class="row-select" />
+            {% for risk in risks %}
+                <div class="table-row admin-list">
+                    <div class="select-cell" data-col="select">
+                        <input type="checkbox" name="risk_id" value="{{ risk['id'] }}" class="row-select" />
+                    </div>
+                    <div class="title" data-col="title">
+                        <a href="{{ url_for('admin_risk_detail', risk_id=risk['id']) }}" title="{{ risk['title'] }}">{{ risk['title'] }}</a>
+                    </div>
+                    <div data-col="severity">
+                        <span class="badge severity {{ (risk['severity'] or 'unspecified')|lower }}">{{ risk['severity'] or 'Unspecified' }}</span>
+                    </div>
+                    <div data-col="status">
+                        <span class="badge status">{{ risk['status'] }}</span>
+                    </div>
+                    <div data-col="assigned" title="{{ risk['assigned_to'] or '' }}">{{ risk['assigned_to'] or '—' }}</div>
+                    <div data-col="owner" title="{{ risk['owner'] or '' }}">{{ risk['owner'] or 'Unassigned' }}</div>
+                    <div data-col="priority">{{ risk['priority'] or '—' }}</div>
+                    <div data-col="progress">
+                        <progress class="progress" value="{{ risk['progress'] or 0 }}" max="100"></progress>
+                        <small>{{ risk['progress'] }}%</small>
+                    </div>
+                    <div data-col="identified">{{ (risk['date_identified'] or '')[:10] }}</div>
+                    <div data-col="updated">{{ risk['updated_at'][:10] }}</div>
                 </div>
-                <div class="title">
-                    <a href="{{ url_for('admin_risk_detail', risk_id=risk['id']) }}" title="{{ risk['title'] }}">{{ risk['title'] }}</a>
-                </div>
-                <div>
-                    <span class="badge severity {{ (risk['severity'] or 'unspecified')|lower }}">{{ risk['severity'] or 'Unspecified' }}</span>
-                </div>
-                <div>
-                    <span class="badge status">{{ risk['status'] }}</span>
-                </div>
-                <div title="{{ risk['assigned_to'] or '' }}">{{ risk['assigned_to'] or '—' }}</div>
-                <div title="{{ risk['owner'] or '' }}">{{ risk['owner'] or 'Unassigned' }}</div>
-                <div>{{ risk['priority'] or '—' }}</div>
-                <div>
-                    <progress class="progress" value="{{ risk['progress'] or 0 }}" max="100"></progress>
-                    <small>{{ risk['progress'] }}%</small>
-                </div>
-                <div>{{ (risk['date_identified'] or '')[:10] }}</div>
-                <div>{{ risk['updated_at'][:10] }}</div>
+            {% else %}
+                <div class="empty">No risks to review.</div>
+            {% endfor %}
             </div>
-        {% else %}
-            <div class="empty">No risks to review.</div>
-        {% endfor %}
         </div>
     </form>
 
@@ -361,6 +384,96 @@
                 svClear.addEventListener('click', () => {
                     saveViews([]);
                     renderViews();
+                });
+            }
+
+            // Column visibility (stored per-browser)
+            const tableWrap = document.getElementById('admin-dashboard-table');
+            const colRoot = document.getElementById('admin-columns');
+            const colKey = 'risk_admin_cols_v1';
+
+            function applyColState(state) {
+                if (!tableWrap || !state) return;
+                const cols = ['severity', 'status', 'assigned', 'owner', 'priority', 'progress', 'identified', 'updated'];
+                cols.forEach(col => {
+                    const hide = state[col] === false;
+                    tableWrap.classList.toggle('hide-' + col, hide);
+                });
+
+                if (colRoot) {
+                    cols.forEach(col => {
+                        const cb = colRoot.querySelector('input[data-col-toggle="' + col + '"]');
+                        if (cb) cb.checked = state[col] !== false;
+                    });
+                }
+            }
+
+            function loadColState() {
+                try {
+                    const raw = localStorage.getItem(colKey);
+                    return raw ? JSON.parse(raw) : null;
+                } catch (e) {
+                    return null;
+                }
+            }
+
+            function saveColState(state) {
+                try {
+                    localStorage.setItem(colKey, JSON.stringify(state));
+                } catch (e) {
+                    // ignore
+                }
+            }
+
+            function presetState(kind) {
+                const base = {
+                    severity: true,
+                    status: true,
+                    assigned: true,
+                    owner: true,
+                    priority: true,
+                    progress: true,
+                    identified: true,
+                    updated: true
+                };
+                if (kind === 'triage') {
+                    base.owner = false;
+                    base.identified = false;
+                    return base;
+                }
+                if (kind === 'minimal') {
+                    base.owner = false;
+                    base.priority = false;
+                    base.progress = false;
+                    base.identified = false;
+                    base.updated = false;
+                    return base;
+                }
+                return base;
+            }
+
+            const loaded = loadColState();
+            applyColState(loaded || presetState('default'));
+            if (!loaded) saveColState(presetState('default'));
+
+            if (colRoot) {
+                colRoot.querySelectorAll('input[data-col-toggle]').forEach(cb => {
+                    cb.addEventListener('change', () => {
+                        const state = loadColState() || presetState('default');
+                        const col = cb.getAttribute('data-col-toggle');
+                        state[col] = cb.checked;
+                        saveColState(state);
+                        applyColState(state);
+                    });
+                });
+
+                colRoot.querySelectorAll('button[data-col-preset]').forEach(btn => {
+                    btn.addEventListener('click', () => {
+                        const kind = btn.getAttribute('data-col-preset');
+                        const state = presetState(kind);
+                        saveColState(state);
+                        applyColState(state);
+                    });
                 });
             }
         })();

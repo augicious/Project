@@ -35,69 +35,109 @@
             </div>
         </details>
     {% endif %}
-    <form class="filters" method="get">
-        <label>
-            Status
-            <select name="status">
-                <option value="all" {% if status_filter == 'all' %}selected{% endif %}>All</option>
-                {% for status in statuses %}
-                    <option value="{{ status }}" {% if status_filter == status %}selected{% endif %}>{{ status }}</option>
-                {% endfor %}
-            </select>
-        </label>
-        <label>
-            Owner
-            <select name="owner">
-                <option value="all" {% if owner_filter == 'all' %}selected{% endif %}>All</option>
-                {% for owner in owners %}
-                    <option value="{{ owner }}" {% if owner_filter == owner %}selected{% endif %}>{{ owner }}</option>
-                {% endfor %}
-            </select>
-        </label>
-        <label>
-            Source Sheet
-            <select name="sheet">
-                <option value="all" {% if sheet_filter == 'all' %}selected{% endif %}>All</option>
-                {% for sheet in sheets %}
-                    <option value="{{ sheet }}" {% if sheet_filter == sheet %}selected{% endif %}>{{ sheet }}</option>
-                {% endfor %}
-            </select>
-        </label>
-        <button type="submit">Apply</button>
-    </form>
 
-    <div class="table">
-        <div class="table-row table-header risk-list">
-            <div>Title</div>
-            <div>Severity</div>
-            <div>Status</div>
-            <div>Owner</div>
-            <div>Priority</div>
-            <div>Progress</div>
-            <div>Identified</div>
-            <div>Updated</div>
+    <div class="sticky-bar" aria-label="Risk register filters">
+        <form class="filters" method="get">
+            <label>
+                Status
+                <select name="status">
+                    <option value="all" {% if status_filter == 'all' %}selected{% endif %}>All</option>
+                    {% for status in statuses %}
+                        <option value="{{ status }}" {% if status_filter == status %}selected{% endif %}>{{ status }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label>
+                Owner
+                <select name="owner">
+                    <option value="all" {% if owner_filter == 'all' %}selected{% endif %}>All</option>
+                    {% for owner in owners %}
+                        <option value="{{ owner }}" {% if owner_filter == owner %}selected{% endif %}>{{ owner }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label>
+                Source Sheet
+                <select name="sheet">
+                    <option value="all" {% if sheet_filter == 'all' %}selected{% endif %}>All</option>
+                    {% for sheet in sheets %}
+                        <option value="{{ sheet }}" {% if sheet_filter == sheet %}selected{% endif %}>{{ sheet }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <button type="submit">Apply</button>
+            <a class="button secondary" href="{{ url_for('index') }}">Reset</a>
+        </form>
+
+        {% if status_filter != 'all' or owner_filter != 'all' or sheet_filter != 'all' %}
+            <div class="chips mt-10" aria-label="Active filters">
+                {% if status_filter != 'all' %}
+                    <span class="chip">Status: {{ status_filter }}</span>
+                {% endif %}
+                {% if owner_filter != 'all' %}
+                    <span class="chip">Owner: {{ owner_filter }}</span>
+                {% endif %}
+                {% if sheet_filter != 'all' %}
+                    <span class="chip">Sheet: {{ sheet_filter }}</span>
+                {% endif %}
+                <span class="chip"><a href="{{ url_for('index') }}">Clear all <span class="chip-x">×</span></a></span>
+            </div>
+        {% endif %}
+
+        <details class="details" id="risk-columns" style="margin-top: 10px;">
+            <summary>Columns</summary>
+            <p class="subtitle">Show/hide fields in the list (stored in this browser).</p>
+            <div class="chips" style="margin-bottom: 10px;">
+                <button type="button" class="button secondary small" data-risk-col-preset="default">Default</button>
+                <button type="button" class="button secondary small" data-risk-col-preset="triage">Triage</button>
+                <button type="button" class="button secondary small" data-risk-col-preset="minimal">Minimal</button>
+            </div>
+            <div class="form-grid" style="grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));">
+                <label><input type="checkbox" data-risk-col-toggle="severity" checked /> Severity</label>
+                <label><input type="checkbox" data-risk-col-toggle="status" checked /> Status</label>
+                <label><input type="checkbox" data-risk-col-toggle="owner" checked /> Owner</label>
+                <label><input type="checkbox" data-risk-col-toggle="priority" checked /> Priority</label>
+                <label><input type="checkbox" data-risk-col-toggle="progress" checked /> Progress</label>
+                <label><input type="checkbox" data-risk-col-toggle="identified" checked /> Identified</label>
+                <label><input type="checkbox" data-risk-col-toggle="updated" checked /> Updated</label>
+            </div>
+        </details>
+    </div>
+
+    <div class="table-wrap risk-register-table" id="risk-register-table" aria-label="Risk register list">
+        <div class="table">
+            <div class="table-row table-header risk-list">
+                <div data-col="title">Title</div>
+                <div data-col="severity">Severity</div>
+                <div data-col="status">Status</div>
+                <div data-col="owner">Owner</div>
+                <div data-col="priority">Priority</div>
+                <div data-col="progress">Progress</div>
+                <div data-col="identified">Identified</div>
+                <div data-col="updated">Updated</div>
+            </div>
+            {% for risk in risks %}
+                <a class="table-row risk-list" href="{{ url_for('risk_detail', risk_id=risk['id']) }}">
+                    <div class="title" data-col="title" title="{{ risk['title'] }}">{{ risk['title'] }}</div>
+                    <div data-col="severity">
+                        <span class="badge severity {{ (risk['severity'] or 'unspecified')|lower }}">{{ risk['severity'] or 'Unspecified' }}</span>
+                    </div>
+                    <div data-col="status">
+                        <span class="badge status">{{ risk['status'] }}</span>
+                    </div>
+                    <div data-col="owner" title="{{ risk['owner'] or '' }}">{{ risk['owner'] or 'Unassigned' }}</div>
+                    <div data-col="priority">{{ risk['priority'] or '—' }}</div>
+                    <div data-col="progress">
+                        <progress class="progress" value="{{ risk['progress'] or 0 }}" max="100"></progress>
+                        <small>{{ risk['progress'] }}%</small>
+                    </div>
+                    <div data-col="identified">{{ (risk['date_identified'] or '')[:10] }}</div>
+                    <div data-col="updated">{{ risk['updated_at'][:10] }}</div>
+                </a>
+            {% else %}
+                <div class="empty">No risks found.</div>
+            {% endfor %}
         </div>
-        {% for risk in risks %}
-            <a class="table-row risk-list" href="{{ url_for('risk_detail', risk_id=risk['id']) }}">
-                <div class="title" title="{{ risk['title'] }}">{{ risk['title'] }}</div>
-                <div>
-                    <span class="badge severity {{ (risk['severity'] or 'unspecified')|lower }}">{{ risk['severity'] or 'Unspecified' }}</span>
-                </div>
-                <div>
-                    <span class="badge status">{{ risk['status'] }}</span>
-                </div>
-                <div title="{{ risk['owner'] or '' }}">{{ risk['owner'] or 'Unassigned' }}</div>
-                <div>{{ risk['priority'] or '—' }}</div>
-                <div>
-                    <progress class="progress" value="{{ risk['progress'] or 0 }}" max="100"></progress>
-                    <small>{{ risk['progress'] }}%</small>
-                </div>
-                <div>{{ (risk['date_identified'] or '')[:10] }}</div>
-                <div>{{ risk['updated_at'][:10] }}</div>
-            </a>
-        {% else %}
-            <div class="empty">No risks found.</div>
-        {% endfor %}
     </div>
 
     <div class="pager" aria-label="Pagination">
@@ -113,5 +153,97 @@
             {% endif %}
         </div>
     </div>
+
+    <script>
+        (function () {
+            const tableWrap = document.getElementById('risk-register-table');
+            const colRoot = document.getElementById('risk-columns');
+            const colKey = 'risk_index_cols_v1';
+
+            function applyColState(state) {
+                if (!tableWrap || !state) return;
+                const cols = ['severity', 'status', 'owner', 'priority', 'progress', 'identified', 'updated'];
+                cols.forEach(col => {
+                    const hide = state[col] === false;
+                    tableWrap.classList.toggle('hide-' + col, hide);
+                });
+
+                if (colRoot) {
+                    cols.forEach(col => {
+                        const cb = colRoot.querySelector('input[data-risk-col-toggle="' + col + '"]');
+                        if (cb) cb.checked = state[col] !== false;
+                    });
+                }
+            }
+
+            function loadColState() {
+                try {
+                    const raw = localStorage.getItem(colKey);
+                    return raw ? JSON.parse(raw) : null;
+                } catch (e) {
+                    return null;
+                }
+            }
+
+            function saveColState(state) {
+                try {
+                    localStorage.setItem(colKey, JSON.stringify(state));
+                } catch (e) {
+                    // ignore
+                }
+            }
+
+            function presetState(kind) {
+                const base = {
+                    severity: true,
+                    status: true,
+                    owner: true,
+                    priority: true,
+                    progress: true,
+                    identified: true,
+                    updated: true
+                };
+                if (kind === 'triage') {
+                    base.owner = false;
+                    base.identified = false;
+                    return base;
+                }
+                if (kind === 'minimal') {
+                    base.owner = false;
+                    base.priority = false;
+                    base.progress = false;
+                    base.identified = false;
+                    base.updated = false;
+                    return base;
+                }
+                return base;
+            }
+
+            const loaded = loadColState();
+            applyColState(loaded || presetState('default'));
+            if (!loaded) saveColState(presetState('default'));
+
+            if (colRoot) {
+                colRoot.querySelectorAll('input[data-risk-col-toggle]').forEach(cb => {
+                    cb.addEventListener('change', () => {
+                        const state = loadColState() || presetState('default');
+                        const col = cb.getAttribute('data-risk-col-toggle');
+                        state[col] = cb.checked;
+                        saveColState(state);
+                        applyColState(state);
+                    });
+                });
+
+                colRoot.querySelectorAll('button[data-risk-col-preset]').forEach(btn => {
+                    btn.addEventListener('click', () => {
+                        const kind = btn.getAttribute('data-risk-col-preset');
+                        const state = presetState(kind);
+                        saveColState(state);
+                        applyColState(state);
+                    });
+                });
+            }
+        })();
+    </script>
 </section>
 {% endblock %}

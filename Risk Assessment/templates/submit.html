@@ -5,6 +5,15 @@
     <h2>Submit a Risk Assessment</h2>
     <form method="post" class="form">
         <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}" />
+
+        <div class="sticky-bar" aria-label="Submit actions">
+            <div class="button-row" style="margin-top: 0;">
+                <button type="submit">Submit Risk</button>
+                <a class="button secondary" href="{{ url_for('submit') }}">Reset</a>
+                <a class="button secondary" href="{{ url_for('index') }}">Back to risks</a>
+            </div>
+        </div>
+
         <label>
             <span class="field-label" tabindex="0" data-tooltip="Short summary of the risk.">Title</span>
             <input type="text" name="title" required />
@@ -72,7 +81,6 @@
                 <input type="number" name="priority" min="1" max="5" />
             </label>
         </div>
-        <button type="submit">Submit Risk</button>
     </form>
 </section>
 {% endblock %}
