@@ -538,10 +538,18 @@ def _graph_app_token() -> str:
     try:
         resp = requests.post(token_url, data=data, timeout=10)
         if resp.status_code != 200:
+            try:
+                logging.warning("Graph app token request failed (status=%s)", resp.status_code)
+            except Exception:
+                pass
             return ""
         payload = resp.json() or {}
         return str(payload.get("access_token") or "").strip()
     except Exception:
+        try:
+            logging.exception("Graph app token request raised exception")
+        except Exception:
+            pass
         return ""
 
 
@@ -570,6 +578,14 @@ def _graph_group_ids_by_names(*, access_token: str, display_names: list[str]) ->
                 timeout=10,
             )
             if resp.status_code != 200:
+                try:
+                    logging.warning(
+                        "Graph group lookup failed (status=%s, name=%s)",
+                        resp.status_code,
+                        name,
+                    )
+                except Exception:
+                    pass
                 continue
             data = resp.json() or {}
             for item in (data.get("value") or []):
@@ -598,6 +614,15 @@ def _graph_group_member_emails(*, access_token: str, group_id: str) -> list[str]
         try:
             resp = requests.get(url, headers=headers, timeout=15)
             if resp.status_code != 200:
+                try:
+                    logging.warning(
+                        "Graph group members fetch failed (status=%s, group_id=%s, url=%s)",
+                        resp.status_code,
+                        str(group_id)[:8] + "...",
+                        ("transitive" if "/transitiveMembers/" in url else "members"),
+                    )
+                except Exception:
+                    pass
                 if (not tried_fallback) and "/transitiveMembers/" in url:
                     tried_fallback = True
                     url = base + "/members/microsoft.graph.user" + "?$select=mail,userPrincipalName,displayName&$top=999"
@@ -643,6 +668,15 @@ def _allowed_assignee_emails(*, force_refresh: bool = False) -> tuple[list[str],
 
     now = time.time()
 
+    explicit_group_ids_raw = os.getenv("ASSIGNEE_ENTRA_GROUP_IDS", "").strip()
+    explicit_group_names_raw = os.getenv("ASSIGNEE_ENTRA_GROUPS", "").strip()
+    explicit_group_configured = bool(explicit_group_ids_raw or explicit_group_names_raw)
+
+    # Read env allowlist only when Entra group is NOT explicitly configured.
+    # If a group is configured, ASSIGNEE_ALLOWLIST should never override or act as fallback.
+    env_list = os.getenv("ASSIGNEE_ALLOWLIST", "").strip() if (not explicit_group_configured) else ""
+    env_fallback_emails = _unique_emails(_parse_recipients(env_list)) if env_list else []
+
     # Snapshot current cache (may be used as last-known-good).
     existing_emails: list[str] = []
     existing_source = ""
@@ -657,29 +691,35 @@ def _allowed_assignee_emails(*, force_refresh: bool = False) -> tuple[list[str],
     existing_source = str(_ASSIGNEE_CACHE.get("source") or "")
 
     if (not force_refresh) and existing_expires and now < existing_expires and existing_emails:
-        return existing_emails, existing_source
+        if explicit_group_configured and str(existing_source).startswith("env:ASSIGNEE_ALLOWLIST"):
+            # Ignore env-derived cache when Entra group config is explicit.
+            pass
+        else:
+            return existing_emails, existing_source
 
     # If in-memory cache is missing/expired, try DB-backed cache (helps with multi-process deployments).
     if (not force_refresh) and (not existing_emails or not existing_expires or now >= existing_expires):
         db_emails, db_source, db_expires = _assignee_cache_db_read()
         if db_emails and db_expires and now < db_expires:
-            _ASSIGNEE_CACHE["expires"] = db_expires
-            _ASSIGNEE_CACHE["emails"] = db_emails
-            _ASSIGNEE_CACHE["source"] = db_source
-            return db_emails, db_source
+            if explicit_group_configured and str(db_source).startswith("env:ASSIGNEE_ALLOWLIST"):
+                # Ignore env-derived DB cache when Entra group config is explicit.
+                pass
+            else:
+                _ASSIGNEE_CACHE["expires"] = db_expires
+                _ASSIGNEE_CACHE["emails"] = db_emails
+                _ASSIGNEE_CACHE["source"] = db_source
+                return db_emails, db_source
 
-    env_list = os.getenv("ASSIGNEE_ALLOWLIST", "").strip()
-    if env_list:
-        emails = _unique_emails(_parse_recipients(env_list))
+    if env_fallback_emails and (not explicit_group_configured):
         expires_epoch = now + ttl
         _ASSIGNEE_CACHE["expires"] = expires_epoch
-        _ASSIGNEE_CACHE["emails"] = emails
+        _ASSIGNEE_CACHE["emails"] = env_fallback_emails
         _ASSIGNEE_CACHE["source"] = "env:ASSIGNEE_ALLOWLIST"
-        _assignee_cache_db_write(emails=emails, source="env:ASSIGNEE_ALLOWLIST", expires_epoch=expires_epoch)
-        return emails, "env:ASSIGNEE_ALLOWLIST"
+        _assignee_cache_db_write(emails=env_fallback_emails, source="env:ASSIGNEE_ALLOWLIST", expires_epoch=expires_epoch)
+        return env_fallback_emails, "env:ASSIGNEE_ALLOWLIST"
 
-    group_ids = _split_csv(os.getenv("ASSIGNEE_ENTRA_GROUP_IDS", ""))
-    group_names = _split_csv(os.getenv("ASSIGNEE_ENTRA_GROUPS", ""))
+    group_ids = _split_csv(explicit_group_ids_raw)
+    group_names = _split_csv(explicit_group_names_raw)
     if not group_ids and not group_names:
         group_names = ["Risk Management"]
 
@@ -702,6 +742,8 @@ def _allowed_assignee_emails(*, force_refresh: bool = False) -> tuple[list[str],
         _ASSIGNEE_CACHE["source"] = "entra"
         _assignee_cache_db_write(emails=emails, source="entra", expires_epoch=expires_epoch)
         return emails, "entra"
+
+    # If Entra lookup is configured and returns empty, do not fall back to ASSIGNEE_ALLOWLIST.
 
     # Graph/enumeration returned empty. Do not wipe out a previously-good cache entry.
     if existing_emails:

@@ -26,7 +26,16 @@
             </label>
             <label>
                 Assigned To
-                <input type="email" name="assigned_to" value="{{ risk['assigned_to'] or '' }}" placeholder="name@hdh.org" inputmode="email" autocomplete="email" list="assignee-options" />
+                {% if assignees %}
+                    <select name="assigned_to">
+                        <option value="">— Unassigned —</option>
+                        {% for a in assignees %}
+                            <option value="{{ a }}" {% if (risk['assigned_to'] or '')|trim|lower == a|trim|lower %}selected{% endif %}>{{ a }}</option>
+                        {% endfor %}
+                    </select>
+                {% else %}
+                    <input type="email" name="assigned_to" value="{{ risk['assigned_to'] or '' }}" placeholder="name@hdh.org" inputmode="email" autocomplete="email" list="assignee-options" />
+                {% endif %}
             </label>
         </div>
         <label>
@@ -211,7 +220,16 @@
                     </label>
                     <label>
                         Assigned To
-                        <input type="email" name="assigned_to" placeholder="Optional" autocomplete="email" inputmode="email" list="assignee-options" />
+                        {% if assignees %}
+                            <select name="assigned_to">
+                                <option value="">(Optional)</option>
+                                {% for a in assignees %}
+                                    <option value="{{ a }}">{{ a }}</option>
+                                {% endfor %}
+                            </select>
+                        {% else %}
+                            <input type="email" name="assigned_to" placeholder="Optional" autocomplete="email" inputmode="email" list="assignee-options" />
+                        {% endif %}
                     </label>
                     <label>
                         Due Date
@@ -343,7 +361,7 @@
                 <div class="form-grid">
                     <label style="grid-column: 1 / -1;">
                         Add watcher email(s)
-                        <input type="text" name="emails" placeholder="name@hdh.org, other@hdh.org" />
+                        <input type="text" name="emails" placeholder="name@hdh.org" />
                     </label>
                 </div>
                 <div class="button-row" style="margin-top: 10px;">
