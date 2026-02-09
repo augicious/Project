@@ -570,6 +570,10 @@ button:disabled,
     background: rgba(7, 11, 22, 0.85);
     border: 1px solid rgba(31, 42, 68, 0.65);
     font-weight: 700;
+    /* Sticky headers must always be laid out/painted; content-visibility can glitch here */
+    content-visibility: visible;
+    contain-intrinsic-size: auto;
+    contain: none;
 }
 
 /* Keep table headers visible while scrolling long lists */
@@ -577,6 +581,14 @@ button:disabled,
     position: sticky;
     top: calc(var(--sticky-header-offset) + var(--sticky-stack-offset, 0px));
     z-index: 5;
+}
+
+/* Admin dashboard: the list sits under a sticky bulk-actions bar.
+   Keeping the table header sticky here can produce confusing mid-list placement
+   depending on scroll position and offsets. Use a normal (non-sticky) header row. */
+.admin-dashboard-table .table-row.table-header {
+    position: static;
+    top: auto;
 }
 
 .table-row.risk-list {

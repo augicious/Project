@@ -119,19 +119,41 @@
                     const n = parseInt(String(raw || '').trim(), 10);
                     return Number.isFinite(n) ? n : 0;
                 }
+
+                let raf = 0;
                 function updateStickyStackOffset() {
                     const barOffset = readPxVar('--sticky-bar-offset');
+                    const headerOffset = readPxVar('--sticky-header-offset');
+
+                    // Only stack when the bar is actually "stuck" (overlaying content).
+                    const expectedTop = headerOffset + barOffset;
+                    const topNow = (stickyBar.getBoundingClientRect && stickyBar.getBoundingClientRect().top) || 0;
+                    const isStuck = Math.abs(topNow - expectedTop) <= 2;
+                    if (!isStuck) {
+                        root.style.setProperty('--sticky-stack-offset', '0px');
+                        return;
+                    }
+
                     const barHeight = stickyBar.offsetHeight || 0;
                     const barStyle = getComputedStyle(stickyBar);
                     const marginBottom = parseFloat(barStyle.marginBottom || '0') || 0;
                     root.style.setProperty('--sticky-stack-offset', String(barOffset + barHeight + Math.max(0, marginBottom)) + 'px');
                 }
 
+                function scheduleUpdate() {
+                    if (raf) return;
+                    raf = window.requestAnimationFrame(function () {
+                        raf = 0;
+                        updateStickyStackOffset();
+                    });
+                }
+
                 updateStickyStackOffset();
-                window.addEventListener('resize', updateStickyStackOffset, { passive: true });
+                window.addEventListener('resize', scheduleUpdate, { passive: true });
+                window.addEventListener('scroll', scheduleUpdate, { passive: true });
 
                 if (window.ResizeObserver) {
-                    const ro = new ResizeObserver(updateStickyStackOffset);
+                    const ro = new ResizeObserver(scheduleUpdate);
                     ro.observe(stickyBar);
                 }
             }

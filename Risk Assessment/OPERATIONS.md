@@ -46,6 +46,22 @@ This is a safety net, not a substitute for avoiding logging sensitive data.
 - Returns HTTP `200` when healthy.
 - Returns HTTP `503` when unhealthy (DB not reachable, required directories not writable, etc.).
 
+## Windows service startup
+
+On the server (e.g. `hdh-websrv`), the app is typically installed as a Windows service named `RiskTicketing`.
+
+Verify it is set to start automatically on boot (run in an elevated PowerShell):
+
+- `Get-Service -Name RiskTicketing | Select-Object Name, Status, StartType`
+
+If needed, set it to start automatically:
+
+- `Set-Service -Name RiskTicketing -StartupType Automatic`
+
+If boot-time ordering is a concern (e.g. the service tries to start before networking is ready), you can use **Automatic (Delayed Start)** instead:
+
+- `sc.exe config RiskTicketing start= delayed-auto`
+
 ## Excel seeding
 
 Excel seeding on startup is **opt-in**:
@@ -53,3 +69,19 @@ Excel seeding on startup is **opt-in**:
 - `SEED_FROM_EXCEL_ON_STARTUP` (default: `false`)
 
 When enabled, the app may import initial data from an Excel file during startup.
+
+## Deploying to IIS folder
+
+To avoid editing files directly on the IIS deployment UNC path, use:
+
+- [scripts/deploy_to_iis.ps1](scripts/deploy_to_iis.ps1)
+
+Example (dry run):
+
+- `powershell -ExecutionPolicy Bypass -File .\scripts\deploy_to_iis.ps1 -WhatIf -Backup`
+
+Example (deploy):
+
+- `powershell -ExecutionPolicy Bypass -File .\scripts\deploy_to_iis.ps1 -Backup`
+
+This copies only the app payload (`app.py`, `templates/`, `static/`, etc.) and does not touch `data/`.

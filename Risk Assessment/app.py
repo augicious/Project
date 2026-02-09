@@ -317,7 +317,8 @@ _load_dotenv_if_available()
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.getenv("FLASK_SECRET_KEY", "dev-secret-change-me")
 app.config["ADMIN_PASSWORD"] = os.getenv("ADMIN_PASSWORD", "admin")
-app.config["APP_VERSION"] = "2026-01-19-01"
+_base_version = os.getenv("APP_VERSION", "").strip() or "2026-01-19-01"
+app.config["APP_VERSION"] = f"{_base_version}-r{int(APP_START_TIME)}"
 app.config["MAX_CONTENT_LENGTH"] = max(1, _max_mb) * 1024 * 1024
 app.config["ATTACHMENT_ARCHIVE_AFTER_DAYS"] = ARCHIVE_AFTER_DAYS
 app.config["RISK_REGISTER_PATH"] = Path(
