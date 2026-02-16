@@ -41,7 +41,9 @@
                 Assigned To
                 <select name="assigned">
                     <option value="all" {% if assignee_filter == 'all' %}selected{% endif %}>All</option>
-                    <option value="me" {% if assignee_filter == 'me' %}selected{% endif %}>Me</option>
+                    <option value="me" {% if assignee_filter == 'me' %}selected{% endif %}>My Queue (All)</option>
+                    <option value="me_open" {% if assignee_filter == 'me_open' %}selected{% endif %}>My Queue (Open)</option>
+                    <option value="me_closed" {% if assignee_filter == 'me_closed' %}selected{% endif %}>My Queue (Closed)</option>
                     <option value="unassigned" {% if assignee_filter == 'unassigned' %}selected{% endif %}>Unassigned</option>
                     {% for a in assignees %}
                         <option value="{{ a }}" {% if assignee_filter == a %}selected{% endif %}>{{ a }}</option>

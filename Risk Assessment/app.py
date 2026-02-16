@@ -158,6 +158,25 @@ def _normalize_email(value: str | None) -> str:
     return m.group(0).strip().lower()
 
 
+def _parse_priority_1_to_5(value: str | None) -> tuple[bool, int | None]:
+    """Parse Priority from a form field.
+
+    Returns (ok, priority). Blank values are ok and return (True, None).
+    Non-blank values must be a whole number 1..5.
+    """
+
+    text = (value or "").strip()
+    if not text:
+        return True, None
+    try:
+        n = int(float(text))
+    except Exception:
+        return False, None
+    if 1 <= n <= 5:
+        return True, n
+    return False, None
+
+
 def _send_email(subject: str, html_body: str, to_addrs: list[str]) -> bool:
     """Send an email using SMTP settings from env vars.
 
@@ -2032,6 +2051,18 @@ def _build_admin_risks_query(
         else:
             # If we don't know who "me" is, return no rows.
             filters.append("1 = 0")
+    elif assignee_filter in {"me_open", "me_closed"}:
+        cond_sql, cond_params = _assignee_me_condition(current_user)
+        if cond_sql:
+            filters.append(cond_sql)
+            params.extend(cond_params)
+        else:
+            filters.append("1 = 0")
+        completed = "LOWER(TRIM(COALESCE(status,''))) IN ('closed','archived','mitigated')"
+        if assignee_filter == "me_open":
+            filters.append(f"NOT ({completed})")
+        else:
+            filters.append(completed)
     elif assignee_filter == "unassigned":
         filters.append("TRIM(COALESCE(assigned_to, '')) = ''")
     elif assignee_filter != "all":
@@ -2077,6 +2108,18 @@ def _build_admin_risks_where(
             params.extend(cond_params)
         else:
             filters.append("1 = 0")
+    elif assignee_filter in {"me_open", "me_closed"}:
+        cond_sql, cond_params = _assignee_me_condition(current_user)
+        if cond_sql:
+            filters.append(cond_sql)
+            params.extend(cond_params)
+        else:
+            filters.append("1 = 0")
+        completed = "LOWER(TRIM(COALESCE(status,''))) IN ('closed','archived','mitigated')"
+        if assignee_filter == "me_open":
+            filters.append(f"NOT ({completed})")
+        else:
+            filters.append(completed)
     elif assignee_filter == "unassigned":
         filters.append("TRIM(COALESCE(assigned_to, '')) = ''")
     elif assignee_filter != "all":
@@ -2126,6 +2169,18 @@ def _build_admin_export_where(
             params.extend(cond_params)
         else:
             filters.append("1 = 0")
+    elif assignee_filter in {"me_open", "me_closed"}:
+        cond_sql, cond_params = _assignee_me_condition(current_user)
+        if cond_sql:
+            filters.append(cond_sql)
+            params.extend(cond_params)
+        else:
+            filters.append("1 = 0")
+        completed = "LOWER(TRIM(COALESCE(status,''))) IN ('closed','archived','mitigated')"
+        if assignee_filter == "me_open":
+            filters.append(f"NOT ({completed})")
+        else:
+            filters.append(completed)
     elif assignee_filter == "unassigned":
         filters.append("TRIM(COALESCE(assigned_to, '')) = ''")
     elif assignee_filter != "all":
@@ -2710,10 +2765,10 @@ def submit():
             return render_template("submit.html")
 
         now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
-        try:
-            priority = int(float(priority_text)) if priority_text else None
-        except ValueError:
-            priority = None
+        ok_priority, priority = _parse_priority_1_to_5(priority_text)
+        if not ok_priority:
+            flash("Priority must be a whole number from 1 to 5.", "warning")
+            return render_template("submit.html")
 
         if not likelihood_residual and likelihood:
             likelihood_residual = likelihood
@@ -3167,6 +3222,7 @@ def admin_dashboard():
     queue_params: list[object] = []
 
     open_condition = "LOWER(TRIM(COALESCE(status,''))) NOT IN ('closed','archived','mitigated')"
+    completed_condition = "LOWER(TRIM(COALESCE(status,''))) IN ('closed','archived','mitigated')"
 
     with get_db_connection() as conn:
         unassigned_where = _where_join(
@@ -3198,15 +3254,26 @@ def admin_dashboard():
                 queue_params,
             ).fetchone()[0]
         )
-        my_count = 0
+        my_open_count = 0
+        my_closed_count = 0
         me_sql, me_params = _assignee_me_condition(current_user)
         if me_sql:
-            my_count = int(
+            my_open_count = int(
                 conn.execute(
                     f"""
                     SELECT COUNT(*)
                     FROM risks
                     {_where_join(queue_where_sql, f"{me_sql} AND {open_condition}")}
+                    """.strip(),
+                    queue_params + me_params,
+                ).fetchone()[0]
+            )
+            my_closed_count = int(
+                conn.execute(
+                    f"""
+                    SELECT COUNT(*)
+                    FROM risks
+                    {_where_join(queue_where_sql, f"{me_sql} AND {completed_condition}")}
                     """.strip(),
                     queue_params + me_params,
                 ).fetchone()[0]
@@ -3261,7 +3328,8 @@ def admin_dashboard():
             "Open": open_count,
             "High/Critical": high_count,
             "Unassigned": unassigned_count,
-            "My queue": my_count,
+            "My queue (Open)": my_open_count,
+            "My queue (Closed)": my_closed_count,
             "Overdue tasks": tasks_overdue,
             "Tasks due (7d)": tasks_due_7,
         },
@@ -3273,8 +3341,11 @@ def admin_dashboard():
             "Unassigned": url_for(
                 "admin_dashboard", status="all", severity="all", assigned="unassigned"
             ),
-            "My queue": url_for(
-                "admin_dashboard", status="all", severity="all", assigned="me"
+            "My queue (Open)": url_for(
+                "admin_dashboard", status="all", severity="all", assigned="me_open"
+            ),
+            "My queue (Closed)": url_for(
+                "admin_dashboard", status="all", severity="all", assigned="me_closed"
             ),
             "Overdue tasks": url_for("admin_tasks", due="overdue"),
             "Tasks due (7d)": url_for("admin_tasks", due="due_7"),
@@ -4600,10 +4671,10 @@ def admin_risk_detail(risk_id: int):
             except ValueError:
                 progress_value = 0
 
-            try:
-                priority = int(float(priority_text)) if priority_text else None
-            except ValueError:
-                priority = None
+            ok_priority, priority = _parse_priority_1_to_5(priority_text)
+            if not ok_priority:
+                flash("Priority must be a whole number from 1 to 5.", "warning")
+                return redirect(url_for("admin_risk_detail", risk_id=risk_id))
 
             if not likelihood_residual and likelihood_initial:
                 likelihood_residual = likelihood_initial

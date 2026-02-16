@@ -591,6 +591,13 @@ button:disabled,
     top: auto;
 }
 
+/* Risk register (index): the sticky column header can overlap the first row(s)
+   under the sticky filter bar depending on scroll/offsets. Use a normal header row. */
+.risk-register-table .table-row.table-header {
+    position: static;
+    top: auto;
+}
+
 .table-row.risk-list {
     grid-template-columns: minmax(0, 2.2fr) minmax(0, 0.9fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 0.7fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr);
 }
@@ -1516,6 +1523,11 @@ button:disabled,
     .filters {
         flex-direction: column;
         align-items: stretch;
+    }
+
+    /* Submit form: avoid side-by-side controls on narrow screens */
+    .form-grid {
+        grid-template-columns: 1fr;
     }
 
     .filters label,

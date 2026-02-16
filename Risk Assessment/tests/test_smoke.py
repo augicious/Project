@@ -132,3 +132,26 @@ def test_admin_comment_edit_smoke(client, risk_app_module):
         assert row["body"] == "Edited body"
         assert (row["updated_at"] or "").strip() != ""
         assert (row["updated_by"] or "").strip() != ""
+
+
+def test_submit_rejects_out_of_range_priority(client, risk_app_module):
+    with client.session_transaction() as sess:
+        sess["_csrf_token"] = "test-csrf"
+
+    resp = client.post(
+        "/submit",
+        data={
+            "_csrf_token": "test-csrf",
+            "title": "Priority Validation",
+            "description": "Testing priority bounds",
+            "severity": "Medium",
+            "priority": "9",
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code == 200
+    assert b"Priority must be" in resp.data
+
+    with risk_app_module.get_db_connection() as conn:
+        n = int(conn.execute("SELECT COUNT(*) FROM risks").fetchone()[0])
+        assert n == 0
