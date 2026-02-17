@@ -4,29 +4,58 @@
 <section class="card">
     <style>
         .heatmap-toolbar { display:flex; gap:12px; align-items:flex-end; justify-content:space-between; flex-wrap:wrap; margin-top: 8px; }
-        .heatmap-toolbar .meta { color: rgba(255,255,255,0.75); font-size: 0.95rem; }
-        .heatmap-toolbar label { display:block; font-size: 0.9rem; color: rgba(255,255,255,0.75); margin-bottom: 4px; }
+        .heatmap-toolbar .meta { color: var(--muted); font-size: 0.95rem; }
+        .heatmap-toolbar label { display:block; font-size: 0.9rem; color: var(--muted); margin-bottom: 4px; }
         .heatmap-toolbar select { min-width: 180px; }
 
         .hm-table { width: 100%; min-width: 560px; border-collapse: collapse; }
-        .hm-table th { text-align: center; padding: 10px 8px; font-weight: 800; border-bottom: 1px solid rgba(255,255,255,0.10); }
+        .hm-table th { text-align: center; padding: 10px 8px; font-weight: 800; border-bottom: 1px solid rgba(226, 232, 240, 0.10); }
         .hm-table th:first-child { text-align: left; }
-        .hm-table td { text-align: center; padding: 10px 8px; border-top: 1px solid rgba(255,255,255,0.08); }
+        .hm-table td { text-align: center; padding: 10px 8px; border-top: 1px solid rgba(226, 232, 240, 0.08); }
         .hm-rowhdr { text-align:left !important; font-weight: 800; }
 
-        .hm-cell { position: relative; border-radius: 8px; }
+        .hm-cell { position: relative; border-radius: 8px; border: 1px solid var(--border); }
+        .hm-cell > * { position: relative; }
+        .hm-cell::before {
+            content: "";
+            position: absolute;
+            inset: 0;
+            border-radius: 8px;
+            background: var(--hm-fill, transparent);
+            opacity: var(--hm-alpha, 0.0);
+            pointer-events: none;
+        }
         .hm-count { font-weight: 900; font-size: 1.1rem; }
         .hm-score { font-size: 0.8rem; opacity: 0.85; margin-top: 2px; }
         .hm-zero { opacity: 0.55; }
 
-        /* Dark-theme friendly heat colors */
-        .hm-low { background: rgba(46, 204, 113, 0.22); }
-        .hm-medium { background: rgba(241, 196, 15, 0.22); }
-        .hm-high { background: rgba(230, 126, 34, 0.22); }
-        .hm-critical { background: rgba(231, 76, 60, 0.24); }
+        /* Match app theme tokens */
+        .hm-low { --hm-fill: var(--success); --hm-alpha: 0.14; }
+        .hm-medium { --hm-fill: var(--warning); --hm-alpha: 0.16; }
+
+        /* High vs Critical should be clearly different (both are “danger family” like badges) */
+        .hm-high {
+            --hm-fill: var(--danger);
+            --hm-alpha: 0.16;
+            border-color: rgba(248, 113, 113, 0.30);
+        }
+        .hm-critical {
+            --hm-fill: var(--danger);
+            --hm-alpha: 0.38;
+        }
+        .hm-critical::before {
+            /* Add a little depth so Critical looks distinct from High */
+            background:
+                radial-gradient(120% 120% at 30% 30%, var(--danger), transparent 62%);
+            opacity: 0.65;
+        }
         .hm-legend { display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top: 6px; }
-        .hm-pill { display:inline-flex; gap:8px; align-items:center; padding: 6px 10px; border-radius: 999px; border: 1px solid rgba(255,255,255,0.12); color: rgba(255,255,255,0.85); font-size: 0.9rem; }
+        .hm-pill { display:inline-flex; gap:8px; align-items:center; padding: 6px 10px; border-radius: 999px; border: 1px solid rgba(226, 232, 240, 0.12); color: rgba(226, 232, 240, 0.92); font-size: 0.9rem; }
         .hm-swatch { width: 14px; height: 14px; border-radius: 4px; display:inline-block; }
+        .hm-swatch.hm-low { background: var(--success); }
+        .hm-swatch.hm-medium { background: var(--warning); }
+        .hm-swatch.hm-high { background: var(--danger); opacity: 0.7; }
+        .hm-swatch.hm-critical { background: var(--danger); }
     </style>
 
     <div class="detail-header">

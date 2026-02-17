@@ -1056,8 +1056,12 @@ button:disabled,
 }
 
 .badge.severity.critical {
-    border-color: rgba(242, 196, 0, 0.55);
-    background: rgba(242, 196, 0, 0.12);
+    /* Critical should stand out clearly from Medium (yellow). */
+    border-color: rgba(248, 113, 113, 0.85);
+    background: rgba(248, 113, 113, 0.22);
+    box-shadow:
+        0 0 0 3px rgba(248, 113, 113, 0.18),
+        0 10px 24px rgba(248, 113, 113, 0.10);
 }
 
 .badge.severity.unspecified {
