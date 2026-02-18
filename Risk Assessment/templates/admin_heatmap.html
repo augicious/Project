@@ -14,7 +14,8 @@
         .hm-table td { text-align: center; padding: 10px 8px; border-top: 1px solid rgba(226, 232, 240, 0.08); }
         .hm-rowhdr { text-align:left !important; font-weight: 800; }
 
-        .hm-cell { position: relative; border-radius: 8px; border: 1px solid var(--border); }
+        .hm-cell { position: relative; border-radius: 8px; border: 1px solid var(--border); background: rgba(255, 255, 255, 0.01); }
+        .hm-cell:not(.hm-zero) { box-shadow: inset 0 0 0 1px rgba(226, 232, 240, 0.08); }
         .hm-cell > * { position: relative; }
         .hm-cell::before {
             content: "";
@@ -27,34 +28,49 @@
         }
         .hm-count { font-weight: 900; font-size: 1.1rem; }
         .hm-score { font-size: 0.8rem; opacity: 0.85; margin-top: 2px; }
-        .hm-zero { opacity: 0.55; }
+        .hm-zero { opacity: 0.42; }
 
-        /* Match app theme tokens */
+        /* Baseline (banded) coloring using theme tokens */
         .hm-low { --hm-fill: var(--success); --hm-alpha: 0.14; }
         .hm-medium { --hm-fill: var(--warning); --hm-alpha: 0.16; }
 
-        /* High vs Critical should be clearly different (both are “danger family” like badges) */
-        .hm-high {
-            --hm-fill: var(--danger);
-            --hm-alpha: 0.16;
-            border-color: rgba(248, 113, 113, 0.30);
-        }
-        .hm-critical {
-            --hm-fill: var(--danger);
-            --hm-alpha: 0.38;
-        }
-        .hm-critical::before {
-            /* Add a little depth so Critical looks distinct from High */
-            background:
-                radial-gradient(120% 120% at 30% 30%, var(--danger), transparent 62%);
-            opacity: 0.65;
+        /* High = orange, Critical = red */
+        .hm-high { --hm-fill: linear-gradient(135deg, var(--warning), var(--danger)); --hm-alpha: 0.22; }
+        .hm-critical { --hm-fill: var(--danger); --hm-alpha: 0.42; }
+
+        /* Smooth low→critical gradient across the whole map (progressive enhancement) */
+        @supports (background: color-mix(in srgb, #000 50%, #fff)) {
+            .hm-cell {
+                --hm-mid: 0.30; /* start blending toward red early so High reads orange */
+                --t: clamp(0, var(--hm-t, 0), 1);
+                --sw-mix: clamp(0, calc(var(--t) / var(--hm-mid)), 1);
+                --wd-mix: clamp(0, calc((var(--t) - var(--hm-mid)) / (1 - var(--hm-mid))), 1);
+                --sw: color-mix(in srgb,
+                    var(--success) calc((1 - var(--sw-mix)) * 100%),
+                    var(--warning) calc(var(--sw-mix) * 100%)
+                );
+                --hm-color: color-mix(in srgb,
+                    var(--sw) calc((1 - var(--wd-mix)) * 100%),
+                    var(--danger) calc(var(--wd-mix) * 100%)
+                );
+
+                /* Depth + polish */
+                --hm-fill: radial-gradient(120% 120% at 30% 30%, var(--hm-color), transparent 66%);
+                /* More contrast across the map: make higher scores visibly “hotter”. */
+                --hm-alpha: calc(0.14 + (var(--t) * 0.62));
+            }
+
+            /* Keep empty cells clearly subdued even when score is high (they're still empty). */
+            .hm-cell.hm-zero {
+                --hm-alpha: calc(0.06 + (var(--t) * 0.22));
+            }
         }
         .hm-legend { display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top: 6px; }
         .hm-pill { display:inline-flex; gap:8px; align-items:center; padding: 6px 10px; border-radius: 999px; border: 1px solid rgba(226, 232, 240, 0.12); color: rgba(226, 232, 240, 0.92); font-size: 0.9rem; }
         .hm-swatch { width: 14px; height: 14px; border-radius: 4px; display:inline-block; }
         .hm-swatch.hm-low { background: var(--success); }
         .hm-swatch.hm-medium { background: var(--warning); }
-        .hm-swatch.hm-high { background: var(--danger); opacity: 0.7; }
+        .hm-swatch.hm-high { background: linear-gradient(135deg, var(--warning), var(--danger)); }
         .hm-swatch.hm-critical { background: var(--danger); }
     </style>
 
@@ -167,7 +183,7 @@
                                     {% set band_label = 'Critical' %}
                                 {% endif %}
 
-                                <td title="Score {{ score }} ({{ band_label }})" class="hm-cell {{ band_class }} {% if c == 0 %}hm-zero{% endif %}">
+                                <td title="Score {{ score }} ({{ band_label }})" class="hm-cell {{ band_class }} {% if c == 0 %}hm-zero{% endif %}" style="--hm-t: {{ '%.4f' % ((score - 1) / 24) }};">
                                     <div class="hm-count">{{ c }}</div>
                                     <div class="hm-score">{{ score }}</div>
                                 </td>
@@ -221,7 +237,7 @@
                                     {% set band_label = 'Critical' %}
                                 {% endif %}
 
-                                <td title="Score {{ score }} ({{ band_label }})" class="hm-cell {{ band_class }} {% if c == 0 %}hm-zero{% endif %}">
+                                <td title="Score {{ score }} ({{ band_label }})" class="hm-cell {{ band_class }} {% if c == 0 %}hm-zero{% endif %}" style="--hm-t: {{ '%.4f' % ((score - 1) / 24) }};">
                                     <div class="hm-count">{{ c }}</div>
                                     <div class="hm-score">{{ score }}</div>
                                 </td>
