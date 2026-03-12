@@ -88,6 +88,50 @@ def test_admin_dashboard_loads_for_admin(client):
     assert b"Admin Dashboard" in resp.data
 
 
+def test_compute_is_admin_from_entra_accepts_group_id_claims(risk_app_module):
+    risk_app_module.app.config["ADMIN_ENTRA_GROUP_IDS"] = "11111111-2222-3333-4444-555555555555"
+    risk_app_module.app.config["ADMIN_ENTRA_GROUPS"] = ""
+
+    is_admin = risk_app_module._compute_is_admin_from_entra(
+        token={},
+        userinfo={"groups": ["11111111-2222-3333-4444-555555555555"]},
+    )
+
+    assert is_admin is True
+
+
+def test_compute_is_admin_from_entra_reads_group_ids_from_token_payload(risk_app_module):
+    risk_app_module.app.config["ADMIN_ENTRA_GROUP_IDS"] = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    risk_app_module.app.config["ADMIN_ENTRA_GROUPS"] = ""
+
+    is_admin = risk_app_module._compute_is_admin_from_entra(
+        token={"userinfo": {"groups": ["aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"]}},
+        userinfo={},
+    )
+
+    assert is_admin is True
+
+
+def test_compute_is_admin_from_entra_uses_graph_user_lookup_fallback(risk_app_module, monkeypatch):
+    risk_app_module.app.config["ADMIN_ENTRA_GROUP_IDS"] = ""
+    risk_app_module.app.config["ADMIN_ENTRA_GROUPS"] = "Risk Management"
+    risk_app_module.app.config["ADMIN_ENTRA_GRAPH_LOOKUP"] = True
+
+    monkeypatch.setattr(risk_app_module, "_graph_get_member_of_group_names", lambda access_token: [])
+    monkeypatch.setattr(
+        risk_app_module,
+        "_graph_user_group_memberships",
+        lambda access_token, user_identifier: (["Risk Management"], []),
+    )
+
+    is_admin = risk_app_module._compute_is_admin_from_entra(
+        token={"access_token": "token"},
+        userinfo={"oid": "user-oid"},
+    )
+
+    assert is_admin is True
+
+
 def test_admin_comment_edit_smoke(client, risk_app_module):
     now = risk_app_module.datetime.now(risk_app_module.timezone.utc).replace(tzinfo=None).isoformat()
     with risk_app_module.get_db_connection() as conn:

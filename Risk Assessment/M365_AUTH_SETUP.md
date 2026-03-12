@@ -106,6 +106,8 @@ Graph permissions:
 - Set `OIDC_SCOPES` to include `GroupMember.Read.All` and grant admin consent in Entra.
   Example:
   - `OIDC_SCOPES=openid profile email User.Read GroupMember.Read.All`
+- The app also has an app-only fallback using `OIDC_TENANT_ID` / `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET` to query the signed-in user’s transitive group membership when the delegated lookup does not return usable groups.
+- For that fallback, grant Microsoft Graph application permissions such as `GroupMember.Read.All` or `Directory.Read.All`, then grant admin consent.
 
 If you prefer the ID token `groups` claim (no Graph call), configure the app registration to emit group IDs and set `ADMIN_ENTRA_GROUP_IDS` accordingly.
 

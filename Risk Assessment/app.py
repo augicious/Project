@@ -587,6 +587,83 @@ def _graph_get_member_of_group_names(access_token: str) -> list[str]:
     return out
 
 
+def _extract_group_claim_ids(*payloads: object) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for payload in payloads:
+        if not isinstance(payload, dict):
+            continue
+        groups_claim = payload.get("groups")
+        if not isinstance(groups_claim, list):
+            continue
+        for group_id in groups_claim:
+            normalized = str(group_id or "").strip().lower()
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                out.append(normalized)
+    return out
+
+
+def _graph_user_group_memberships(*, access_token: str = "", user_identifier: str = "") -> tuple[list[str], list[str]]:
+    names: list[str] = []
+    ids: list[str] = []
+
+    def _collect(url: str, headers: dict[str, str]) -> None:
+        next_url = str(url or "").strip()
+        for _ in range(20):
+            if not next_url:
+                break
+            try:
+                resp = requests.get(next_url, headers=headers, timeout=10)
+            except Exception:
+                break
+            if resp.status_code != 200:
+                break
+            data = resp.json() or {}
+            for item in (data.get("value") or []):
+                group_id = str((item or {}).get("id") or "").strip()
+                display_name = str((item or {}).get("displayName") or "").strip()
+                if group_id:
+                    ids.append(group_id)
+                if display_name:
+                    names.append(display_name)
+            next_url = str(data.get("@odata.nextLink") or "").strip()
+
+    delegated_token = str(access_token or "").strip()
+    if delegated_token:
+        _collect(
+            "https://graph.microsoft.com/v1.0/me/transitiveMemberOf/microsoft.graph.group?$select=id,displayName&$top=999",
+            {"Authorization": f"Bearer {delegated_token}"},
+        )
+
+    if (not names and not ids) and user_identifier:
+        app_token = _graph_app_token()
+        if app_token:
+            safe_user = requests.utils.quote(str(user_identifier).strip(), safe="@.-_")
+            _collect(
+                f"https://graph.microsoft.com/v1.0/users/{safe_user}/transitiveMemberOf/microsoft.graph.group?$select=id,displayName&$top=999",
+                {"Authorization": f"Bearer {app_token}"},
+            )
+
+    deduped_names: list[str] = []
+    seen_names: set[str] = set()
+    for name in names:
+        key = name.strip().lower()
+        if key and key not in seen_names:
+            seen_names.add(key)
+            deduped_names.append(name)
+
+    deduped_ids: list[str] = []
+    seen_ids: set[str] = set()
+    for group_id in ids:
+        key = group_id.strip().lower()
+        if key and key not in seen_ids:
+            seen_ids.add(key)
+            deduped_ids.append(group_id)
+
+    return deduped_names, deduped_ids
+
+
 _ASSIGNEE_CACHE: dict[str, object] = {
     "expires": 0.0,
     "emails": [],
@@ -957,12 +1034,9 @@ def _compute_is_admin_from_entra(*, token: dict, userinfo: dict) -> bool:
     if not allowed_names and not allowed_ids:
         return False
 
-    # If the ID token contains a 'groups' claim, it is usually a list of GUIDs.
-    groups_claim = userinfo.get("groups")
-    if isinstance(groups_claim, list) and allowed_ids:
-        for gid in groups_claim:
-            if str(gid).strip().lower() in allowed_ids:
-                return True
+    group_ids_from_claims = set(_extract_group_claim_ids(userinfo, token, token.get("userinfo")))
+    if allowed_ids and group_ids_from_claims.intersection(allowed_ids):
+        return True
 
     if not app.config.get("ADMIN_ENTRA_GRAPH_LOOKUP", True):
         return False
@@ -972,6 +1046,26 @@ def _compute_is_admin_from_entra(*, token: dict, userinfo: dict) -> bool:
     for name in group_names:
         if name.strip().lower() in allowed_names:
             return True
+
+    user_identifier = (
+        str(userinfo.get("oid") or "").strip()
+        or str(userinfo.get("preferred_username") or "").strip()
+        or str(userinfo.get("upn") or "").strip()
+        or str(userinfo.get("email") or "").strip()
+        or str(userinfo.get("sub") or "").strip()
+    )
+    graph_names, graph_ids = _graph_user_group_memberships(
+        access_token=access_token,
+        user_identifier=user_identifier,
+    )
+    if allowed_names:
+        for name in graph_names:
+            if name.strip().lower() in allowed_names:
+                return True
+    if allowed_ids:
+        for group_id in graph_ids:
+            if group_id.strip().lower() in allowed_ids:
+                return True
     return False
 
 
