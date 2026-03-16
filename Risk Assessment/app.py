@@ -34,6 +34,7 @@ UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", str(DATA_DIR / "uploads")))
 ARCHIVE_DIR = Path(os.getenv("ATTACHMENT_ARCHIVE_DIR", str(DATA_DIR / "uploads_archive")))
 
 APP_START_TIME = time.time()
+_ASSIGNEE_CACHE: dict[str, object] = {"expires": 0.0, "emails": [], "source": ""}
 
 DEFAULT_MAX_UPLOAD_MB = 15
 try:
@@ -636,14 +637,13 @@ def _graph_user_group_memberships(*, access_token: str = "", user_identifier: st
             {"Authorization": f"Bearer {delegated_token}"},
         )
 
-    if (not names and not ids) and user_identifier:
-        app_token = _graph_app_token()
-        if app_token:
-            safe_user = requests.utils.quote(str(user_identifier).strip(), safe="@.-_")
-            _collect(
-                f"https://graph.microsoft.com/v1.0/users/{safe_user}/transitiveMemberOf/microsoft.graph.group?$select=id,displayName&$top=999",
-                {"Authorization": f"Bearer {app_token}"},
-            )
+    app_token = _graph_app_token()
+    safe_user = quote(str(user_identifier or "").strip(), safe="")
+    if app_token and safe_user:
+        _collect(
+            f"https://graph.microsoft.com/v1.0/users/{safe_user}/transitiveMemberOf/microsoft.graph.group?$select=id,displayName&$top=999",
+            {"Authorization": f"Bearer {app_token}"},
+        )
 
     deduped_names: list[str] = []
     seen_names: set[str] = set()
@@ -664,15 +664,54 @@ def _graph_user_group_memberships(*, access_token: str = "", user_identifier: st
     return deduped_names, deduped_ids
 
 
-_ASSIGNEE_CACHE: dict[str, object] = {
-    "expires": 0.0,
-    "emails": [],
-    "source": "",
-}
+def _graph_group_member_emails(*, access_token: str, group_id: str) -> list[str]:
+    if not access_token or not group_id:
+        return []
+
+    headers = {"Authorization": f"Bearer {access_token}"}
+    base = "https://graph.microsoft.com/v1.0/groups/" + str(group_id).strip()
+    # Prefer transitiveMembers (includes nested groups). Some tenants restrict this; fall back to /members.
+    url = base + "/transitiveMembers/microsoft.graph.user" + "?$select=mail,userPrincipalName,displayName&$top=999"
+    emails: list[str] = []
+    tried_fallback = False
+
+    for _ in range(25):
+        try:
+            resp = requests.get(url, headers=headers, timeout=15)
+            if resp.status_code != 200:
+                try:
+                    logging.warning(
+                        "Graph group members fetch failed (status=%s, group_id=%s, url=%s)",
+                        resp.status_code,
+                        str(group_id)[:8] + "...",
+                        ("transitive" if "/transitiveMembers/" in url else "members"),
+                    )
+                except Exception:
+                    pass
+                if (not tried_fallback) and "/transitiveMembers/" in url:
+                    tried_fallback = True
+                    url = base + "/members/microsoft.graph.user" + "?$select=mail,userPrincipalName,displayName&$top=999"
+                    continue
+                break
+            data = resp.json() or {}
+            for item in (data.get("value") or []):
+                mail = (item or {}).get("mail")
+                upn = (item or {}).get("userPrincipalName")
+                addr = _normalize_email(str(mail or upn or ""))
+                if addr:
+                    emails.append(addr)
+            next_link = data.get("@odata.nextLink")
+            if not next_link:
+                break
+            url = str(next_link)
+        except Exception:
+            break
+
+    return _unique_emails(emails)
 
 
 def _assignee_cache_db_read() -> tuple[list[str], str, float]:
-    """Read allowlist cache from SQLite for multi-process stability."""
+    """Read allowlist cache from SQLite. Best-effort."""
 
     try:
         with get_db_connection() as conn:
@@ -838,51 +877,12 @@ def _graph_group_ids_by_names(*, access_token: str, display_names: list[str]) ->
     return out
 
 
-def _graph_group_member_emails(*, access_token: str, group_id: str) -> list[str]:
-    if not access_token or not group_id:
-        return []
+def _assignee_entra_group_names() -> list[str]:
+    configured_names = _split_csv(os.getenv("ASSIGNEE_ENTRA_GROUPS", "").strip())
+    if configured_names:
+        return configured_names
 
-    headers = {"Authorization": f"Bearer {access_token}"}
-    base = "https://graph.microsoft.com/v1.0/groups/" + str(group_id).strip()
-    # Prefer transitiveMembers (includes nested groups). Some tenants restrict this; fall back to /members.
-    url = base + "/transitiveMembers/microsoft.graph.user" + "?$select=mail,userPrincipalName,displayName&$top=999"
-    emails: list[str] = []
-
-    tried_fallback = False
-
-    for _ in range(25):
-        try:
-            resp = requests.get(url, headers=headers, timeout=15)
-            if resp.status_code != 200:
-                try:
-                    logging.warning(
-                        "Graph group members fetch failed (status=%s, group_id=%s, url=%s)",
-                        resp.status_code,
-                        str(group_id)[:8] + "...",
-                        ("transitive" if "/transitiveMembers/" in url else "members"),
-                    )
-                except Exception:
-                    pass
-                if (not tried_fallback) and "/transitiveMembers/" in url:
-                    tried_fallback = True
-                    url = base + "/members/microsoft.graph.user" + "?$select=mail,userPrincipalName,displayName&$top=999"
-                    continue
-                break
-            data = resp.json() or {}
-            for item in (data.get("value") or []):
-                mail = (item or {}).get("mail")
-                upn = (item or {}).get("userPrincipalName")
-                addr = _normalize_email(str(mail or upn or ""))
-                if addr:
-                    emails.append(addr)
-            next_link = data.get("@odata.nextLink")
-            if not next_link:
-                break
-            url = str(next_link)
-        except Exception:
-            break
-
-    return _unique_emails(emails)
+    return ["Information Systems"]
 
 
 def _allowed_assignee_emails(*, force_refresh: bool = False) -> tuple[list[str], str]:
@@ -892,7 +892,7 @@ def _allowed_assignee_emails(*, force_refresh: bool = False) -> tuple[list[str],
       1) ASSIGNEE_ALLOWLIST (CSV/semicolon)
       2) Entra group members via Graph app-only token:
          - ASSIGNEE_ENTRA_GROUP_IDS (CSV of GUIDs)
-         - or ASSIGNEE_ENTRA_GROUPS (CSV of display names; default: Risk Management)
+                 - or ASSIGNEE_ENTRA_GROUPS (CSV of display names; default: Information Systems)
     """
 
     try:
@@ -910,6 +910,7 @@ def _allowed_assignee_emails(*, force_refresh: bool = False) -> tuple[list[str],
 
     explicit_group_ids_raw = os.getenv("ASSIGNEE_ENTRA_GROUP_IDS", "").strip()
     explicit_group_names_raw = os.getenv("ASSIGNEE_ENTRA_GROUPS", "").strip()
+    group_names = _assignee_entra_group_names()
     explicit_group_configured = bool(explicit_group_ids_raw or explicit_group_names_raw)
 
     # Read env allowlist only when Entra group is NOT explicitly configured.
@@ -959,9 +960,6 @@ def _allowed_assignee_emails(*, force_refresh: bool = False) -> tuple[list[str],
         return env_fallback_emails, "env:ASSIGNEE_ALLOWLIST"
 
     group_ids = _split_csv(explicit_group_ids_raw)
-    group_names = _split_csv(explicit_group_names_raw)
-    if not group_ids and not group_names:
-        group_names = ["Risk Management"]
 
     emails: list[str] = []
     if group_ids or group_names:
@@ -3885,7 +3883,7 @@ def admin_task_add(risk_id: int):
         if not ok:
             allowlist, _src = _allowed_assignee_emails()
             if normalized and allowlist:
-                flash("Task assignee must be a member of the Risk Management group.", "warning")
+                flash("Task assignee must be a member of the configured assignee group.", "warning")
             else:
                 flash("Task assignee must be a valid email address (e.g. name@hdh.org).", "warning")
             return redirect(url_for("admin_risk_detail", risk_id=risk_id))
@@ -4309,7 +4307,7 @@ def admin_bulk_update():
         if not ok:
             allowlist, _src = _allowed_assignee_emails()
             if normalized and allowlist:
-                flash("Assignee must be a member of the Risk Management group.", "warning")
+                flash("Assignee must be a member of the configured assignee group.", "warning")
             else:
                 flash("Assignee must be a valid email address (e.g. name@hdh.org).", "warning")
             return redirect(return_to or url_for("admin_dashboard"))
@@ -4792,7 +4790,7 @@ def admin_risk_detail(risk_id: int):
             if not ok:
                 allowlist, _src = _allowed_assignee_emails()
                 if assigned_to_norm and allowlist:
-                    flash("Assignee must be a member of the Risk Management group.", "warning")
+                    flash("Assignee must be a member of the configured assignee group.", "warning")
                 else:
                     flash("Assignee must be a valid email address (e.g. name@hdh.org).", "warning")
                 return redirect(url_for("admin_risk_detail", risk_id=risk_id))

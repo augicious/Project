@@ -132,6 +132,30 @@ def test_compute_is_admin_from_entra_uses_graph_user_lookup_fallback(risk_app_mo
     assert is_admin is True
 
 
+def test_allowed_assignee_emails_defaults_to_information_systems_group(risk_app_module, monkeypatch):
+    risk_app_module._ASSIGNEE_CACHE.clear()
+
+    monkeypatch.delenv("ASSIGNEE_ENTRA_GROUPS", raising=False)
+    monkeypatch.delenv("ASSIGNEE_ENTRA_GROUP_IDS", raising=False)
+    monkeypatch.delenv("ASSIGNEE_ALLOWLIST", raising=False)
+    monkeypatch.setattr(risk_app_module, "_graph_app_token", lambda: "token")
+    monkeypatch.setattr(
+        risk_app_module,
+        "_graph_group_ids_by_names",
+        lambda access_token, display_names: ["group-id"] if display_names == ["Information Systems"] else [],
+    )
+    monkeypatch.setattr(
+        risk_app_module,
+        "_graph_group_member_emails",
+        lambda access_token, group_id: ["admin.one@hdh.org", "admin.two@hdh.org"] if group_id == "group-id" else [],
+    )
+
+    emails, source = risk_app_module._allowed_assignee_emails(force_refresh=True)
+
+    assert source == "entra"
+    assert emails == ["admin.one@hdh.org", "admin.two@hdh.org"]
+
+
 def test_admin_comment_edit_smoke(client, risk_app_module):
     now = risk_app_module.datetime.now(risk_app_module.timezone.utc).replace(tzinfo=None).isoformat()
     with risk_app_module.get_db_connection() as conn:

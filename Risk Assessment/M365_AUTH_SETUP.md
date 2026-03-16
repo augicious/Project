@@ -117,11 +117,11 @@ To prevent typos when assigning risks/tasks, the app can restrict `assigned_to` 
 
 Priority order for the allowlist:
 1) `ASSIGNEE_ALLOWLIST` (recommended if you want explicit control)
-2) Entra group members (Risk Management by default)
+2) Entra group members (defaults to `ASSIGNEE_ENTRA_GROUPS`; otherwise falls back to `Information Systems`)
 
 Environment variables:
 - `ASSIGNEE_ALLOWLIST` = comma/semicolon-separated emails
-- `ASSIGNEE_ENTRA_GROUPS` = comma-separated Entra group display names (default: `Risk Management`)
+- `ASSIGNEE_ENTRA_GROUPS` = comma-separated Entra group display names (default: `Information Systems`)
 - `ASSIGNEE_ENTRA_GROUP_IDS` = comma-separated Entra group GUIDs (preferred, avoids name lookup)
 - `ASSIGNEE_CACHE_SECONDS` = cache TTL for the allowlist (default: `300`)
 
