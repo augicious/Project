@@ -9,7 +9,7 @@ This app supports Microsoft 365 sign-in (Microsoft Entra ID / Azure AD) using Op
 3. Supported account types:
    - Usually **Single tenant** (recommended for internal apps).
 4. Redirect URI (Web):
-   - `https://reportrisks.hdh.org/auth/callback`
+  - `https://reportrisk.hdh.org/auth/callback`
 
 After creation, copy:
 - **Application (client) ID** → `OIDC_CLIENT_ID`
@@ -36,8 +36,8 @@ Set these environment variables for the service user (the account running NSSM/W
 - `OIDC_TENANT_ID`
 - `OIDC_CLIENT_ID`
 - `OIDC_CLIENT_SECRET`
-- `OIDC_REDIRECT_URI` = `https://reportrisks.hdh.org/auth/callback`
-- `OIDC_POST_LOGOUT_REDIRECT_URI` = `https://reportrisks.hdh.org/`
+- `OIDC_REDIRECT_URI` = `https://reportrisk.hdh.org/auth/callback`
+- `OIDC_POST_LOGOUT_REDIRECT_URI` = `https://reportrisk.hdh.org/`
 
 Optional:
 - `AUTH_REQUIRED` = `true` (default) to require login for the whole site
